@@ -1,0 +1,60 @@
+**English** | [Tiếng Việt](README.vi.md)
+
+# SoundCloud Multi-Play
+
+A Manifest V3 Chrome extension that keeps SoundCloud playing across tabs and devices, paired with a mini-player popup for playback controls, progress saving, and track downloading.
+
+## Features
+
+- **Multi-location playback bypass** — Keeps SoundCloud playing even when you start playback in another browser tab or on another device (`"Paused because you started playing on another device."`). Can be toggled on or off from the popup.
+- **Mini-player controls & seekable progress bar** — View the playing track's artwork, title, artist, and elapsed/total time, and scrub directly to any position.
+- **Volume & mute control** — Adjust SoundCloud's volume slider (`0%–100%`) or mute/unmute from the popup.
+- **Like & Follow** — Like the playing track or follow its artist directly from the popup.
+- **Track downloader** — Download the currently playing track (`.m4a` AAC or `.mp3` when provided by SoundCloud) with a live progress bar that fades back to the default button when finished.
+- **Save & resume progress** — Automatically saves your playback position (up to the 50 most recent tracks) and restores it when you replay the track after a page refresh or return later, plus a Resume card in the popup.
+
+## Keyboard Shortcuts (Popup)
+
+| Key | Action |
+| --- | --- |
+| `Space` / `K` | Play / Pause |
+| `←` / `J` | Previous track |
+| `→` | Next track |
+| `Shift` + `←` / `→` | Seek −10s / +10s |
+| `↑` / `↓` | Volume +5% / −5% |
+| `M` | Mute / Unmute |
+| `S` | Toggle Shuffle |
+| `R` | Cycle Repeat |
+| `L` | Like / Unlike track |
+| `F` | Follow / Unfollow artist |
+| `D` | Download playing track |
+
+## Installation (Load Unpacked)
+
+1. Open `chrome://extensions` in Chrome (or a Chromium-based browser such as Edge or Brave).
+2. Enable **Developer mode** in the top-right corner.
+3. Click **Load unpacked** and select the `C:\soundcloud` folder.
+4. Open or refresh `https://soundcloud.com`.
+
+## Project Structure
+
+```text
+soundcloud/
+├── manifest.json          # Extension manifest (MV3)
+├── content-main.js        # MAIN-world hooks, player bridge, downloader, progress sync
+├── content-bridge.js      # ISOLATED-world bridge for chrome.storage and popup messaging
+├── icons/
+│   ├── icon-16.png
+│   ├── icon-48.png
+│   └── icon-128.png
+└── popup/
+    ├── popup.html         # Extension popup markup
+    ├── popup.css          # Dark mini-player styling
+    └── popup.js           # Popup UI logic, shortcuts, and tab communication
+```
+
+## Permissions
+
+- `storage` — Stores the bypass toggle state and saved track playback positions locally in `chrome.storage.local`.
+- `tabs` — Finds active SoundCloud tabs to query player state, send playback commands, or focus/open SoundCloud.
+- `*://*.soundcloud.com/*` — Injects the content scripts on SoundCloud pages.
