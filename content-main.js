@@ -10,9 +10,69 @@
   let downloadResetTimer = null;
   let downloadState = { status: 'idle', progress: 0, error: '', filename: '', id: 0 };
   let savedProgress = {};
+  let savedProgressLoaded = false;
   let lastPlayed = null;
   const restoredTracks = new Set();
+  const restoreSeekAttempts = new Map();
   let lastSavedSignature = '';
+  let pendingResume = null;
+  let pendingSeekTargetSec = 0;
+  let pendingSeekUntil = 0;
+  const mediaSessionHandlers = {};
+  let mediaPositionState = null;
+  let mediaPositionUpdatedAt = 0;
+
+  // 0. Capture SoundCloud's MediaSession handlers (same API used by Edge/Chrome Media Control Center)
+  if (navigator.mediaSession) {
+    const ms = navigator.mediaSession;
+    if (typeof ms.setActionHandler === 'function') {
+      const origSetActionHandler = ms.setActionHandler.bind(ms);
+      ms.setActionHandler = function (action, handler) {
+        if (handler) {
+          mediaSessionHandlers[action] = handler;
+        } else {
+          delete mediaSessionHandlers[action];
+        }
+        return origSetActionHandler(action, handler);
+      };
+    }
+    if (typeof ms.setPositionState === 'function') {
+      const origSetPositionState = ms.setPositionState.bind(ms);
+      ms.setPositionState = function (state) {
+        if (state && typeof state === 'object') {
+          const trackHref = document.querySelector('.playbackSoundBadge__titleLink')?.href || '';
+          mediaPositionState = {
+            trackUrl: normalizeTrackUrl(trackHref),
+            duration: Number(state.duration) || 0,
+            position: Number(state.position) || 0,
+            playbackRate: Number(state.playbackRate) || 1
+          };
+          mediaPositionUpdatedAt = Date.now();
+        } else {
+          mediaPositionState = null;
+        }
+        return origSetPositionState(state);
+      };
+    }
+  }
+  let resumeAttemptCount = 0;
+  let lastResumeClickAt = 0;
+  let resumeRetryTimer = null;
+  let waitingForUserGesture = false;
+  const RESUME_TTL_MS = 30000;
+  const MAX_RESUME_CLICKS = 15;
+
+  function normalizeTrackUrl(url) {
+    if (!url) return '';
+    try {
+      const parsed = new URL(String(url), location.origin);
+      const host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+      const path = parsed.pathname.replace(/\/+$/, '').toLowerCase();
+      return `${parsed.protocol}//${host}${path}`;
+    } catch {
+      return String(url).split('#')[0].split('?')[0].replace(/\/+$/, '').toLowerCase();
+    }
+  }
 
   function captureClientIdFromUrl(url) {
     if (!url || !String(url).includes('client_id=')) return;
@@ -271,13 +331,31 @@
     const ariaMax = Number(progressWrap?.getAttribute('aria-valuemax'));
     const timePassedText = timePassedEl?.textContent?.trim() || '0:00';
     const durationRawText = durationEl?.textContent?.trim() || '0:00';
+    const isPlaying = Boolean(playEl?.classList.contains('playing'));
 
-    const currentTimeSec = Number.isFinite(ariaNow) && ariaNow >= 0
+    let currentTimeSec = Number.isFinite(ariaNow) && ariaNow >= 0
       ? ariaNow
       : parseTimeStr(timePassedText);
-    const durationSec = Number.isFinite(ariaMax) && ariaMax > 0
+    let durationSec = Number.isFinite(ariaMax) && ariaMax > 0
       ? ariaMax
       : parseTimeStr(durationRawText);
+
+    const currentTrackNorm = normalizeTrackUrl(titleEl?.href);
+    const hasMatchingMediaPos = Boolean(
+      mediaPositionState &&
+      mediaPositionState.duration > 0 &&
+      (!mediaPositionState.trackUrl || !currentTrackNorm || mediaPositionState.trackUrl === currentTrackNorm)
+    );
+    if (hasMatchingMediaPos) {
+      durationSec = mediaPositionState.duration;
+      const elapsed = isPlaying
+        ? ((Date.now() - mediaPositionUpdatedAt) / 1000) * (mediaPositionState.playbackRate || 1)
+        : 0;
+      const msPos = Math.min(durationSec, Math.max(0, mediaPositionState.position + elapsed));
+      if (Math.abs(msPos - currentTimeSec) <= 3 || !Number.isFinite(ariaNow)) {
+        currentTimeSec = msPos;
+      }
+    }
 
     let repeatMode = 'none';
     if (repeatEl?.classList.contains('m-one')) repeatMode = 'one';
@@ -313,6 +391,17 @@
 
   function seekToRatio(ratio) {
     const clamped = Math.min(1, Math.max(0, Number(ratio) || 0));
+    const player = window.__sc_players?.current;
+    if (player && typeof player.seek === 'function') {
+      const durMs = typeof player.getDuration === 'function'
+        ? player.getDuration()
+        : getPlayerState().durationSec * 1000;
+      if (durMs > 0) {
+        player.seek(Math.round(clamped * durMs));
+        return true;
+      }
+    }
+
     const wrapper = document.querySelector('.playbackTimeline__progressWrapper');
     if (!wrapper) return false;
     const rect = wrapper.getBoundingClientRect();
@@ -415,17 +504,30 @@
         break;
       case 'seekRatio': {
         const st = getPlayerState();
-        if (st.trackUrl) restoredTracks.add(st.trackUrl.split('?')[0]);
+        if (st.trackUrl) restoredTracks.add(normalizeTrackUrl(st.trackUrl));
         seekToRatio(value);
         setTimeout(persistCurrentProgress, 150);
         break;
       }
       case 'seekDelta': {
         const state = getPlayerState();
+        const delta = Number(value || 0);
         if (state.durationSec > 0) {
-          if (state.trackUrl) restoredTracks.add(state.trackUrl.split('?')[0]);
-          const targetSec = Math.min(state.durationSec, Math.max(0, state.currentTimeSec + Number(value || 0)));
-          seekToRatio(targetSec / state.durationSec);
+          if (state.trackUrl) restoredTracks.add(normalizeTrackUrl(state.trackUrl));
+          const now = Date.now();
+          const baseSec = now < pendingSeekUntil ? pendingSeekTargetSec : state.currentTimeSec;
+          const targetSec = Math.min(state.durationSec, Math.max(0, baseSec + delta));
+          pendingSeekTargetSec = targetSec;
+          pendingSeekUntil = now + 1200;
+
+          const player = window.__sc_players?.current;
+          if (player && typeof player.seek === 'function') {
+            player.seek(Math.round(targetSec * 1000));
+          } else if (typeof mediaSessionHandlers.seekto === 'function') {
+            mediaSessionHandlers.seekto({ seekTime: targetSec });
+          } else {
+            seekToRatio(targetSec / state.durationSec);
+          }
           setTimeout(persistCurrentProgress, 150);
         }
         break;
@@ -447,14 +549,16 @@
     const state = getPlayerState();
     if (!state.hasTrack || !state.trackUrl || state.durationSec <= 15) return;
 
-    const cleanUrl = state.trackUrl.split('?')[0];
+    const cleanUrl = normalizeTrackUrl(state.trackUrl);
     const sec = Math.floor(state.currentTimeSec);
     const dur = Math.floor(state.durationSec);
 
+    let progressAction = '';
     let changed = false;
     if (sec >= dur - 5) {
       if (savedProgress[cleanUrl]) {
         delete savedProgress[cleanUrl];
+        progressAction = 'delete';
         changed = true;
       }
     } else if (sec >= 5) {
@@ -469,11 +573,13 @@
           updatedAt: Date.now()
         };
         savedProgress = pruneSavedProgress(savedProgress);
+        progressAction = 'upsert';
         changed = true;
       }
     }
 
-    const nextLast = sec >= 5 && sec < dur - 5
+    const lastChanged = sec >= 5 && sec < dur - 5;
+    const nextLast = lastChanged
       ? {
           trackUrl: cleanUrl,
           timeSec: sec,
@@ -486,14 +592,16 @@
       : lastPlayed;
 
     const sig = `${cleanUrl}:${sec}:${Boolean(savedProgress[cleanUrl])}`;
-    if (changed || sig !== lastSavedSignature) {
+    if (changed || (lastChanged && sig !== lastSavedSignature)) {
       lastSavedSignature = sig;
       lastPlayed = nextLast;
       window.postMessage(
         {
           source: MSG_SOURCE,
           type: 'SAVE_PROGRESS',
-          savedProgress,
+          trackUrl: cleanUrl,
+          remove: progressAction === 'delete',
+          entry: progressAction === 'upsert' ? savedProgress[cleanUrl] : null,
           lastPlayed
         },
         '*'
@@ -501,30 +609,311 @@
     }
   }
 
+  function isElementVisible(el) {
+    if (!el) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function isExcludedPlayButton(el) {
+    return Boolean(
+      el.closest('.playControls, .playbackSoundBadge, .relatedSounds, .soundList, .queue, .sidebarModule')
+    );
+  }
+
+  function findPagePlayButton() {
+    const selectors = [
+      '.fullHero .playButton',
+      '.fullHero .sc-button-play',
+      '.listenHero .sc-button-play',
+      '.soundTitle__playButton .sc-button-play',
+      '.soundTitle__playButton button',
+      '.listenEngagement .playButton',
+      '.sc-button-play.playButton',
+      '[data-testid="play-button"]'
+    ];
+    for (const sel of selectors) {
+      const candidates = document.querySelectorAll(sel);
+      for (const el of candidates) {
+        if (
+          !el.disabled &&
+          !el.classList.contains('disabled') &&
+          !isExcludedPlayButton(el) &&
+          isElementVisible(el)
+        ) {
+          return el;
+        }
+      }
+    }
+    return null;
+  }
+
+  function isButtonPlayingOrLoading(el) {
+    if (!el) return false;
+    if (el.classList.contains('sc-button-pause') || el.classList.contains('sc-button-buffering')) {
+      return true;
+    }
+    const title = (el.getAttribute('title') || '').trim().toLowerCase();
+    const label = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+    return title === 'pause' || label === 'pause' || title === 'buffering' || label === 'buffering';
+  }
+
+  function detachResumeGestureListeners() {
+    waitingForUserGesture = false;
+    document.removeEventListener('pointerdown', onUserGestureForResume, true);
+    document.removeEventListener('keydown', onUserGestureForResume, true);
+    window.removeEventListener('focus', onTabFocusForResume);
+    document.removeEventListener('visibilitychange', onTabFocusForResume);
+  }
+
+  function onUserGestureForResume() {
+    detachResumeGestureListeners();
+    if (pendingResume) {
+      lastResumeClickAt = 0;
+      processPendingResume();
+    }
+  }
+
+  function onTabFocusForResume() {
+    if (document.visibilityState === 'visible' && document.hasFocus() && pendingResume && waitingForUserGesture) {
+      onUserGestureForResume();
+    }
+  }
+
+  function handleAutoplayBlocked() {
+    if (!pendingResume || waitingForUserGesture) return;
+    waitingForUserGesture = true;
+    clearTimeout(resumeRetryTimer);
+    resumeRetryTimer = null;
+    document.addEventListener('pointerdown', onUserGestureForResume, { capture: true, once: true });
+    document.addEventListener('keydown', onUserGestureForResume, { capture: true, once: true });
+    if (!document.hasFocus() || document.visibilityState !== 'visible') {
+      window.addEventListener('focus', onTabFocusForResume, { once: true });
+      document.addEventListener('visibilitychange', onTabFocusForResume, { once: true });
+    }
+  }
+
+  async function watchMediaPlayPromise(promise) {
+    try {
+      await promise;
+    } catch (err) {
+      if (err && err.name === 'NotAllowedError' && pendingResume) {
+        handleAutoplayBlocked();
+      }
+    }
+  }
+
+  const origMediaPlay = HTMLMediaElement.prototype.play;
+  if (origMediaPlay) {
+    HTMLMediaElement.prototype.play = function () {
+      const result = origMediaPlay.apply(this, arguments);
+      if (result && typeof result.then === 'function') {
+        watchMediaPlayPromise(result);
+      }
+      return result;
+    };
+  }
+
+  let staleHeroBtn = null;
+  let staleHeroClearAt = 0;
+
+  function clearPendingResume(notifyBridge = true) {
+    pendingResume = null;
+    resumeAttemptCount = 0;
+    lastResumeClickAt = 0;
+    staleHeroBtn = null;
+    staleHeroClearAt = 0;
+    detachResumeGestureListeners();
+    clearTimeout(resumeRetryTimer);
+    resumeRetryTimer = null;
+    if (notifyBridge) {
+      window.postMessage({ source: MSG_SOURCE, type: 'CLEAR_PENDING_RESUME' }, '*');
+    }
+  }
+
+  function scheduleResumeRetry(delayMs = 250) {
+    clearTimeout(resumeRetryTimer);
+    resumeRetryTimer = setTimeout(processPendingResume, delayMs);
+  }
+
+  function processPendingResume() {
+    if (!pendingResume) return;
+
+    const now = Date.now();
+    if (now - pendingResume.requestedAt > RESUME_TTL_MS) {
+      clearPendingResume(true);
+      return;
+    }
+
+    const targetNorm = pendingResume.trackUrl;
+    if (normalizeTrackUrl(location.href) !== targetNorm) {
+      return;
+    }
+
+    const state = getPlayerState();
+    const stateTrackNorm = normalizeTrackUrl(state.trackUrl);
+    const isTargetLoaded = state.hasTrack && stateTrackNorm === targetNorm;
+
+    if (isTargetLoaded && state.isPlaying) {
+      maybeRestoreProgress();
+      if (pendingResume.timeSec >= 5 && !restoredTracks.has(targetNorm)) {
+        scheduleResumeRetry(250);
+        return;
+      }
+      clearPendingResume(true);
+      return;
+    }
+
+    if (waitingForUserGesture) {
+      return;
+    }
+
+    if (document.visibilityState !== 'visible') {
+      scheduleResumeRetry(150);
+      return;
+    }
+
+    const heroPlay = findPagePlayButton();
+    const barPlay = document.querySelector('.playControl');
+    const heroIsLoadingOrPlaying = isButtonPlayingOrLoading(heroPlay);
+
+    if (staleHeroBtn && heroPlay === staleHeroBtn && now < staleHeroClearAt) {
+      scheduleResumeRetry(200);
+      return;
+    }
+    staleHeroBtn = null;
+
+    if (!heroIsLoadingOrPlaying && now - lastResumeClickAt >= 1000) {
+      if (resumeAttemptCount >= MAX_RESUME_CLICKS) {
+        clearPendingResume(true);
+        return;
+      }
+
+      if (isTargetLoaded && barPlay && !barPlay.classList.contains('disabled') && !barPlay.classList.contains('playing')) {
+        if (document.readyState !== 'loading') resumeAttemptCount += 1;
+        lastResumeClickAt = now;
+        barPlay.click();
+      } else if (heroPlay && !heroPlay.classList.contains('sc-button-disabled')) {
+        if (document.readyState !== 'loading') resumeAttemptCount += 1;
+        lastResumeClickAt = now;
+        heroPlay.click();
+      }
+    }
+
+    scheduleResumeRetry(250);
+  }
+
+  function ensurePendingProgressEntry() {
+    if (!pendingResume || pendingResume.timeSec < 5) return;
+    const existing = savedProgress[pendingResume.trackUrl];
+    if (!existing || existing.timeSec < 5) {
+      savedProgress[pendingResume.trackUrl] = {
+        timeSec: Math.floor(pendingResume.timeSec),
+        durationSec: 0,
+        title: '',
+        artist: '',
+        artworkUrl: '',
+        updatedAt: Date.now()
+      };
+    }
+  }
+
+  function startPendingResume(resumeObj) {
+    if (!resumeObj || !resumeObj.trackUrl) {
+      clearPendingResume(false);
+      return;
+    }
+    const age = Date.now() - (Number(resumeObj.requestedAt) || 0);
+    if (age > RESUME_TTL_MS) {
+      clearPendingResume(true);
+      return;
+    }
+
+    const targetNorm = normalizeTrackUrl(resumeObj.trackUrl);
+    if (!targetNorm || normalizeTrackUrl(location.href) !== targetNorm) {
+      return;
+    }
+
+    const incomingRequestedAt = Number(resumeObj.requestedAt) || Date.now();
+    if (
+      pendingResume &&
+      pendingResume.trackUrl === targetNorm &&
+      pendingResume.requestedAt === incomingRequestedAt
+    ) {
+      return;
+    }
+
+    pendingResume = {
+      trackUrl: targetNorm,
+      timeSec: Number(resumeObj.timeSec) || 0,
+      requestedAt: incomingRequestedAt
+    };
+    resumeAttemptCount = 0;
+    lastResumeClickAt = 0;
+    detachResumeGestureListeners();
+    restoredTracks.delete(targetNorm);
+    restoreSeekAttempts.delete(targetNorm);
+    ensurePendingProgressEntry();
+
+    processPendingResume();
+  }
+
   function maybeRestoreProgress() {
+    if (!savedProgressLoaded && !pendingResume) return;
+
     const state = getPlayerState();
     if (!state.hasTrack || !state.isPlaying || !state.trackUrl || state.durationSec <= 15) return;
 
-    const cleanUrl = state.trackUrl.split('?')[0];
+    const cleanUrl = normalizeTrackUrl(state.trackUrl);
     if (restoredTracks.has(cleanUrl)) return;
 
     const entry = savedProgress[cleanUrl];
     if (!entry || entry.timeSec < 5 || entry.timeSec >= state.durationSec - 5) {
       restoredTracks.add(cleanUrl);
+      restoreSeekAttempts.delete(cleanUrl);
       return;
     }
 
     if (state.currentTimeSec <= 4) {
+      const attempts = restoreSeekAttempts.get(cleanUrl) || 0;
+      if (attempts >= 3) {
+        restoredTracks.add(cleanUrl);
+        restoreSeekAttempts.delete(cleanUrl);
+        return;
+      }
+
       restoredTracks.add(cleanUrl);
+      restoreSeekAttempts.set(cleanUrl, attempts + 1);
       const ratio = entry.timeSec / state.durationSec;
+
       setTimeout(() => {
         const cur = getPlayerState();
-        if (cur.hasTrack && cur.trackUrl.split('?')[0] === cleanUrl && cur.currentTimeSec <= 4) {
-          seekToRatio(ratio);
+        if (cur.hasTrack && normalizeTrackUrl(cur.trackUrl) === cleanUrl && cur.currentTimeSec <= 4) {
+          const ok = seekToRatio(ratio);
+          setTimeout(() => {
+            const after = getPlayerState();
+            if (
+              after.hasTrack &&
+              after.isPlaying &&
+              normalizeTrackUrl(after.trackUrl) === cleanUrl &&
+              after.currentTimeSec <= 4 &&
+              (restoreSeekAttempts.get(cleanUrl) || 0) < 3
+            ) {
+              restoredTracks.delete(cleanUrl);
+              if (ok) maybeRestoreProgress();
+            } else {
+              restoreSeekAttempts.delete(cleanUrl);
+            }
+          }, 500);
+        } else {
+          restoreSeekAttempts.delete(cleanUrl);
         }
       }, 350);
     } else {
       restoredTracks.add(cleanUrl);
+      restoreSeekAttempts.delete(cleanUrl);
     }
   }
 
@@ -776,23 +1165,58 @@
     }
 
     if (type === 'SET_SAVED_PROGRESS') {
-      savedProgress = event.data.savedProgress || {};
+      const incoming = event.data.savedProgress || {};
+      savedProgress = { ...incoming };
+      ensurePendingProgressEntry();
+      savedProgressLoaded = true;
       lastPlayed = event.data.lastPlayed || null;
       maybeRestoreProgress();
       return;
     }
 
+    if (type === 'SET_PENDING_RESUME') {
+      startPendingResume(event.data.pendingResume || null);
+      return;
+    }
+
     if (type === 'PLAY_ON_PAGE') {
-      const heroPlay = document.querySelector(
-        '.listenEngagement .playButton, .soundTitle__playButton button, .fullHero .sc-button-play, .sc-button-play.playButton'
-      );
-      const barPlay = document.querySelector('.playControl');
-      if (barPlay && !barPlay.classList.contains('disabled') && !barPlay.classList.contains('playing')) {
-        barPlay.click();
-      } else if (heroPlay) {
-        heroPlay.click();
+      const targetUrl = normalizeTrackUrl(event.data.targetUrl || location.href);
+      const resumeObj = {
+        trackUrl: targetUrl,
+        timeSec: Number(event.data.timeSec) || 0,
+        requestedAt: Number(event.data.requestedAt) || Date.now()
+      };
+
+      const curUrl = normalizeTrackUrl(location.href);
+      if (targetUrl && curUrl !== targetUrl) {
+        const state = getPlayerState();
+        const isLoadedInBar = state.hasTrack && normalizeTrackUrl(state.trackUrl) === targetUrl;
+        if (!isLoadedInBar) {
+          staleHeroBtn = findPagePlayButton();
+          staleHeroClearAt = Date.now() + 1800;
+          try {
+            const parsed = new URL(targetUrl);
+            history.pushState({}, '', parsed.pathname + parsed.search);
+            window.dispatchEvent(new PopStateEvent('popstate'));
+          } catch {
+            // Ignore URL parse error
+          }
+          setTimeout(() => {
+            if (normalizeTrackUrl(location.href) !== targetUrl) {
+              location.assign(targetUrl);
+            } else {
+              startPendingResume(resumeObj);
+            }
+          }, 350);
+          window.postMessage(
+            { source: MSG_SOURCE, type: 'RESPONSE', requestId, payload: getPlayerState() },
+            '*'
+          );
+          return;
+        }
       }
-      setTimeout(maybeRestoreProgress, 500);
+
+      startPendingResume(resumeObj);
       window.postMessage(
         { source: MSG_SOURCE, type: 'RESPONSE', requestId, payload: getPlayerState() },
         '*'
@@ -827,4 +1251,6 @@
       })();
     }
   });
+
+  window.postMessage({ source: MSG_SOURCE, type: 'MAIN_READY' }, '*');
 })();

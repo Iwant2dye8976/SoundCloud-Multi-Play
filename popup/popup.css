@@ -159,6 +159,64 @@ input:checked + .slider::before {
   transform: translateX(18px);
 }
 
+/* Multi-Tab Switcher (Media Control Center style) */
+.tabs-bar {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tabs-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.tab-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 150px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: border-color 0.14s ease, color 0.14s ease, background-color 0.14s ease;
+}
+
+.tab-chip:hover {
+  border-color: var(--border-strong);
+  color: var(--ink);
+}
+
+.tab-chip.active {
+  border-color: rgba(255, 85, 0, 0.55);
+  background: rgba(255, 85, 0, 0.14);
+  color: #ffffff;
+}
+
+.tab-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--subtle);
+  flex-shrink: 0;
+}
+
+.tab-chip.audible .tab-chip-dot {
+  background: var(--ok);
+}
+
+.tab-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Player Card */
 .player-card {
   background: var(--surface);
@@ -479,10 +537,10 @@ input:checked + .slider::before {
   font-variant-numeric: tabular-nums;
 }
 
-/* Like & Follow Row */
+/* Like, Follow & Copy Link Row */
 .social-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 8px;
 }
 
@@ -522,6 +580,12 @@ input:checked + .slider::before {
   color: #ff7a33;
 }
 
+.social-btn.copied {
+  border-color: rgba(34, 197, 94, 0.5);
+  background: rgba(34, 197, 94, 0.14);
+  color: #86efac;
+}
+
 .icon-btn {
   position: relative;
   display: inline-flex;
@@ -552,6 +616,17 @@ input:checked + .slider::before {
 
 .icon-btn.subtle {
   color: var(--muted);
+}
+
+.skip-sec-btn .skip-label {
+  position: absolute;
+  font-size: 7.5px;
+  font-weight: 700;
+  line-height: 1;
+  top: 54%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
 }
 
 .repeat-badge {

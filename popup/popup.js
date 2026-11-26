@@ -3,6 +3,7 @@
 const toggleEl = document.getElementById('toggle');
 const statusCardEl = document.getElementById('status-card');
 const statusTextEl = document.getElementById('status-text');
+const tabsBarEl = document.getElementById('tabs-bar');
 
 const emptyStateEl = document.getElementById('empty-state');
 const emptyMessageEl = document.getElementById('empty-message');
@@ -26,9 +27,11 @@ const timeDurationEl = document.getElementById('time-duration');
 
 const btnShuffle = document.getElementById('btn-shuffle');
 const btnPrev = document.getElementById('btn-prev');
+const btnBack10 = document.getElementById('btn-back10');
 const btnPlay = document.getElementById('btn-play');
 const iconPlay = document.getElementById('icon-play');
 const iconPause = document.getElementById('icon-pause');
+const btnFwd10 = document.getElementById('btn-fwd10');
 const btnNext = document.getElementById('btn-next');
 const btnRepeat = document.getElementById('btn-repeat');
 const repeatBadgeEl = document.getElementById('repeat-badge');
@@ -48,12 +51,23 @@ const followTextEl = document.getElementById('follow-text');
 const iconFollowAdd = btnFollow.querySelector('.icon-follow-add');
 const iconFollowCheck = btnFollow.querySelector('.icon-follow-check');
 
+const btnCopy = document.getElementById('btn-copy');
+const copyTextEl = document.getElementById('copy-text');
+const iconCopyLink = btnCopy.querySelector('.icon-copy-link');
+const iconCopyDone = btnCopy.querySelector('.icon-copy-done');
+
 const btnDownload = document.getElementById('btn-download');
 const downloadFillEl = document.getElementById('download-fill');
 const downloadTextEl = document.getElementById('download-text');
 
 let activeTabId = null;
+let activeWindowId = null;
+let selectedTabId = null;
+let lastTabsRenderKey = '';
+let lastRenderedTrackUrl = '';
 let isDraggingSeek = false;
+let seekLockUntil = 0;
+let lastKeySeekAt = 0;
 let isDraggingVolume = false;
 let latestState = null;
 let lastPlayedInfo = null;
@@ -61,6 +75,7 @@ let activeDoneId = null;
 let dismissedDoneId = null;
 let fadeHoldTimer = null;
 let fadeSwapTimer = null;
+let copyResetTimer = null;
 
 function formatTime(totalSec) {
   const sec = Math.max(0, Math.floor(totalSec || 0));
@@ -170,6 +185,11 @@ function renderDownloadState(dl) {
 
 function renderPlayerState(state) {
   latestState = state;
+  const nextTrackUrl = state?.hasTrack ? normalizeTrackUrl(state.trackUrl) : '';
+  if (nextTrackUrl !== lastRenderedTrackUrl) {
+    lastRenderedTrackUrl = nextTrackUrl;
+    resetCopyButton();
+  }
   if (!state || !state.hasTrack) {
     emptyStateEl.classList.remove('hidden');
     playerContentEl.classList.add('hidden');
@@ -237,11 +257,11 @@ function renderPlayerState(state) {
   iconFollowAdd.classList.toggle('hidden', following);
   iconFollowCheck.classList.toggle('hidden', !following);
 
-  if (!isDraggingSeek) {
+  if (!isDraggingSeek && Date.now() > seekLockUntil) {
     const ratio = state.durationSec > 0 ? state.currentTimeSec / state.durationSec : 0;
-    const val = Math.round(Math.min(1, Math.max(0, ratio)) * 1000);
+    const val = Math.round(Math.min(1, Math.max(0, ratio)) * 10000);
     progressRangeEl.value = String(val);
-    setProgressVisual(val / 10);
+    setProgressVisual(val / 100);
     timePassedEl.textContent = state.currentTimeText || '0:00';
   }
   timeDurationEl.textContent = state.durationText || '0:00';
@@ -249,22 +269,92 @@ function renderPlayerState(state) {
   renderDownloadState(state.downloadState);
 }
 
+function normalizeTrackUrl(url) {
+  if (!url) return '';
+  try {
+    const parsed = new URL(String(url), 'https://soundcloud.com');
+    const host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+    const path = parsed.pathname.replace(/\/+$/, '').toLowerCase();
+    return `${parsed.protocol}//${host}${path}`;
+  } catch {
+    return String(url).split('#')[0].split('?')[0].replace(/\/+$/, '').toLowerCase();
+  }
+}
+
+function renderTabsBar(tabs, currentTabId) {
+  if (!tabs || tabs.length < 2) {
+    if (lastTabsRenderKey !== '') {
+      lastTabsRenderKey = '';
+      tabsBarEl.classList.add('hidden');
+      tabsBarEl.replaceChildren();
+    }
+    return;
+  }
+
+  const renderKey = `${currentTabId}|${tabs
+    .map((t) => `${t.id}:${t.audible ? 1 : 0}:${t.title || ''}`)
+    .join('\u0001')}`;
+  if (renderKey === lastTabsRenderKey) return;
+  lastTabsRenderKey = renderKey;
+
+  tabsBarEl.classList.remove('hidden');
+  const nodes = tabs.map((tab, index) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'tab-chip';
+    if (tab.id === currentTabId) btn.classList.add('active');
+    if (tab.audible) btn.classList.add('audible');
+    btn.setAttribute('role', 'tab');
+    btn.setAttribute('aria-selected', String(tab.id === currentTabId));
+
+    const dot = document.createElement('span');
+    dot.className = 'tab-chip-dot';
+    const label = document.createElement('span');
+    label.className = 'tab-chip-text';
+    const cleanTitle = (tab.title || '').replace(/\s*\|\s*Listen online.*$/i, '').replace(/^Stream\s+/i, '').trim();
+    label.textContent = cleanTitle || `Tab ${index + 1}`;
+    btn.title = tab.title || `SoundCloud Tab ${index + 1}`;
+
+    btn.append(dot, label);
+    btn.addEventListener('click', () => {
+      selectedTabId = tab.id;
+      resetCopyButton();
+      refreshState();
+    });
+    return btn;
+  });
+
+  tabsBarEl.replaceChildren(...nodes);
+}
+
 async function findSoundCloudTab() {
   const tabs = await chrome.tabs.query({ url: '*://*.soundcloud.com/*' });
-  if (!tabs || tabs.length === 0) return null;
-  const audible = tabs.find((t) => t.audible);
-  if (audible) return audible;
-  const active = tabs.find((t) => t.active);
-  return active || tabs[0];
+  if (!tabs || tabs.length === 0) {
+    renderTabsBar([], null);
+    return null;
+  }
+
+  let chosen = null;
+  if (selectedTabId !== null) {
+    chosen = tabs.find((t) => t.id === selectedTabId) || null;
+  }
+  if (!chosen) {
+    chosen = tabs.find((t) => t.audible) || tabs.find((t) => t.active) || tabs[0];
+  }
+  selectedTabId = chosen.id;
+  renderTabsBar(tabs, chosen.id);
+  return chosen;
 }
 
 async function sendToSoundCloudTab(message) {
   const tab = await findSoundCloudTab();
   if (!tab) {
     activeTabId = null;
+    activeWindowId = null;
     return null;
   }
   activeTabId = tab.id;
+  activeWindowId = tab.windowId;
   try {
     return await chrome.tabs.sendMessage(tab.id, message);
   } catch {
@@ -286,6 +376,33 @@ async function sendCommand(command, value) {
   if (res?.state) renderPlayerState(res.state);
 }
 
+function resetCopyButton() {
+  clearTimeout(copyResetTimer);
+  copyResetTimer = null;
+  btnCopy.classList.remove('copied');
+  iconCopyLink.classList.remove('hidden');
+  iconCopyDone.classList.add('hidden');
+  copyTextEl.textContent = 'Copy link';
+}
+
+async function copySongLink() {
+  const url = latestState?.trackUrl ? latestState.trackUrl.split('?')[0] : '';
+  if (!url) return;
+  try {
+    await navigator.clipboard.writeText(url);
+    resetCopyButton();
+    btnCopy.classList.add('copied');
+    iconCopyLink.classList.add('hidden');
+    iconCopyDone.classList.remove('hidden');
+    copyTextEl.textContent = 'Copied!';
+    copyResetTimer = setTimeout(resetCopyButton, 1800);
+  } catch {
+    resetCopyButton();
+    copyTextEl.textContent = 'Copy failed';
+    copyResetTimer = setTimeout(resetCopyButton, 1800);
+  }
+}
+
 async function triggerDownload() {
   renderDownloadState({ status: 'downloading', progress: 2 });
   const res = await sendToSoundCloudTab({ type: 'DOWNLOAD_TRACK' });
@@ -304,7 +421,7 @@ toggleEl.addEventListener('change', async () => {
 
 openScBtn.addEventListener('click', async () => {
   if (activeTabId) {
-    await chrome.tabs.update(activeTabId, { active: true });
+    await focusTabAndWindow(activeTabId, activeWindowId);
     window.close();
   } else {
     await chrome.tabs.create({ url: 'https://soundcloud.com/discover' });
@@ -312,39 +429,89 @@ openScBtn.addEventListener('click', async () => {
   }
 });
 
+async function focusTabAndWindow(tabId, windowId, updateProps = { active: true }) {
+  const tasks = [chrome.tabs.update(tabId, updateProps)];
+  if (windowId !== undefined) {
+    tasks.push((async () => {
+      try {
+        await chrome.windows.update(windowId, { focused: true });
+      } catch {
+        // Ignore window focus errors
+      }
+    })());
+  }
+  await Promise.all(tasks);
+}
+
 resumeBtn.addEventListener('click', async () => {
   if (!lastPlayedInfo?.trackUrl) return;
-  const tab = await findSoundCloudTab();
-  const targetClean = lastPlayedInfo.trackUrl.split('?')[0];
-  const tabClean = tab?.url ? tab.url.split('?')[0] : '';
+  const targetClean = normalizeTrackUrl(lastPlayedInfo.trackUrl);
+  if (!targetClean) return;
 
-  if (tab && tabClean === targetClean) {
-    await chrome.tabs.update(tab.id, { active: true });
-    await sendToSoundCloudTab({ type: 'PLAY_ON_PAGE' });
-  } else if (tab) {
-    await chrome.tabs.update(tab.id, { url: lastPlayedInfo.trackUrl, active: true });
-  } else {
-    await chrome.tabs.create({ url: lastPlayedInfo.trackUrl });
+  resumeBtn.disabled = true;
+  const pendingResume = {
+    trackUrl: targetClean,
+    timeSec: Number(lastPlayedInfo.timeSec) || 0,
+    requestedAt: Date.now()
+  };
+
+  try {
+    const tabs = await chrome.tabs.query({ url: '*://*.soundcloud.com/*' });
+    const matchingTab = tabs.find((t) => normalizeTrackUrl(t.pendingUrl || t.url) === targetClean);
+    const tab = matchingTab || await findSoundCloudTab();
+
+    if (tab) {
+      await chrome.storage.local.set({ pendingResume });
+
+      let delivered = false;
+      try {
+        const resp = await chrome.tabs.sendMessage(tab.id, {
+          type: 'PLAY_ON_PAGE',
+          targetUrl: targetClean,
+          timeSec: pendingResume.timeSec,
+          requestedAt: pendingResume.requestedAt
+        });
+        delivered = Boolean(resp?.ok);
+      } catch {
+        delivered = false;
+      }
+
+      if (delivered) {
+        await focusTabAndWindow(tab.id, tab.windowId, { active: true });
+      } else if (matchingTab) {
+        await focusTabAndWindow(tab.id, tab.windowId, { active: true });
+        await chrome.tabs.reload(tab.id);
+      } else {
+        await focusTabAndWindow(tab.id, tab.windowId, { url: lastPlayedInfo.trackUrl, active: true });
+      }
+    } else {
+      await chrome.storage.local.set({ pendingResume });
+      await chrome.tabs.create({ url: lastPlayedInfo.trackUrl });
+    }
+    window.close();
+  } catch {
+    resumeBtn.disabled = false;
   }
-  window.close();
 });
 
 clearResumeBtn.addEventListener('click', async () => {
-  await chrome.storage.local.set({ savedProgress: {}, lastPlayed: null });
+  await chrome.storage.local.set({ savedProgress: {}, lastPlayed: null, pendingResume: null });
   lastPlayedInfo = null;
   resumeCardEl.classList.add('hidden');
 });
 
 focusTabBtn.addEventListener('click', async () => {
   if (activeTabId) {
-    await chrome.tabs.update(activeTabId, { active: true });
+    await focusTabAndWindow(activeTabId, activeWindowId);
     window.close();
   }
 });
 
 btnShuffle.addEventListener('click', () => sendCommand('toggleShuffle'));
 btnPrev.addEventListener('click', () => sendCommand('prev'));
+btnBack10.addEventListener('click', () => triggerStepSeek(-10));
 btnPlay.addEventListener('click', () => sendCommand('togglePlay'));
+btnFwd10.addEventListener('click', () => triggerStepSeek(10));
 btnNext.addEventListener('click', () => sendCommand('next'));
 btnRepeat.addEventListener('click', () => sendCommand('toggleRepeat'));
 btnMute.addEventListener('click', () => sendCommand('toggleMute'));
@@ -356,21 +523,36 @@ btnFollow.addEventListener('click', async () => {
   await sendCommand('toggleFollow');
   setTimeout(refreshState, 350);
 });
+btnCopy.addEventListener('click', copySongLink);
 btnDownload.addEventListener('click', triggerDownload);
 
 progressRangeEl.addEventListener('input', () => {
   isDraggingSeek = true;
   const val = Number(progressRangeEl.value);
-  setProgressVisual(val / 10);
+  setProgressVisual(val / 100);
   if (latestState?.durationSec > 0) {
-    timePassedEl.textContent = formatTime((val / 1000) * latestState.durationSec);
+    timePassedEl.textContent = formatTime((val / 10000) * latestState.durationSec);
   }
 });
 
 progressRangeEl.addEventListener('change', async () => {
-  const ratio = Number(progressRangeEl.value) / 1000;
-  await sendCommand('seekRatio', ratio);
+  const ratio = Number(progressRangeEl.value) / 10000;
+  seekLockUntil = Date.now() + 700;
   isDraggingSeek = false;
+  await sendCommand('seekRatio', ratio);
+});
+
+const releaseActiveDrags = () => {
+  isDraggingSeek = false;
+  isDraggingVolume = false;
+};
+window.addEventListener('pointerup', releaseActiveDrags);
+window.addEventListener('pointercancel', releaseActiveDrags);
+progressRangeEl.addEventListener('blur', () => {
+  isDraggingSeek = false;
+});
+volumeRangeEl.addEventListener('blur', () => {
+  isDraggingVolume = false;
 });
 
 let volumeSendTimer = null;
@@ -390,6 +572,23 @@ volumeRangeEl.addEventListener('change', async () => {
   await sendCommand('setVolume', pct / 100);
   isDraggingVolume = false;
 });
+
+function triggerStepSeek(deltaSec) {
+  if (!latestState?.hasTrack) return;
+  const now = Date.now();
+  if (now - lastKeySeekAt < 180) return;
+  lastKeySeekAt = now;
+  seekLockUntil = now + 700;
+  if (latestState.durationSec > 0) {
+    const targetSec = Math.min(latestState.durationSec, Math.max(0, (latestState.currentTimeSec || 0) + deltaSec));
+    latestState.currentTimeSec = targetSec;
+    const val = Math.round((targetSec / latestState.durationSec) * 10000);
+    progressRangeEl.value = String(val);
+    setProgressVisual(val / 100);
+    timePassedEl.textContent = formatTime(targetSec);
+  }
+  sendCommand('seekDelta', deltaSec);
+}
 
 document.addEventListener('keydown', (e) => {
   if (!latestState?.hasTrack) return;
@@ -414,16 +613,19 @@ document.addEventListener('keydown', (e) => {
     sendCommand('setVolume', next);
   } else if (e.code === 'ArrowLeft' && e.shiftKey) {
     e.preventDefault();
-    sendCommand('seekDelta', -10);
+    sendCommand('prev');
   } else if (e.code === 'ArrowRight' && e.shiftKey) {
     e.preventDefault();
-    sendCommand('seekDelta', 10);
-  } else if (e.code === 'ArrowLeft' || e.key === 'j' || e.key === 'J') {
+    sendCommand('next');
+  } else if (e.code === 'ArrowLeft') {
     e.preventDefault();
-    sendCommand('prev');
+    triggerStepSeek(-10);
   } else if (e.code === 'ArrowRight') {
     e.preventDefault();
-    sendCommand('next');
+    triggerStepSeek(10);
+  } else if (e.key === 'j' || e.key === 'J') {
+    e.preventDefault();
+    sendCommand('prev');
   } else if (e.key === 'l' || e.key === 'L') {
     e.preventDefault();
     sendCommand('toggleLike');
@@ -432,6 +634,9 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     sendCommand('toggleFollow');
     setTimeout(refreshState, 350);
+  } else if (e.key === 'c' || e.key === 'C') {
+    e.preventDefault();
+    copySongLink();
   } else if (e.key === 'm' || e.key === 'M') {
     e.preventDefault();
     sendCommand('toggleMute');
