@@ -18,15 +18,16 @@ A Manifest V3 Chrome extension that keeps SoundCloud playing across tabs and dev
 | Key | Action |
 | --- | --- |
 | `Space` / `K` | Play / Pause |
-| `←` / `J` | Previous track |
-| `→` | Next track |
-| `Shift` + `←` / `→` | Seek −10s / +10s |
+| `←` / `→` | Seek −10s / +10s |
+| `Shift` + `←` / `J` | Previous track |
+| `Shift` + `→` | Next track |
 | `↑` / `↓` | Volume +5% / −5% |
 | `M` | Mute / Unmute |
 | `S` | Toggle Shuffle |
 | `R` | Cycle Repeat |
 | `L` | Like / Unlike track |
 | `F` | Follow / Unfollow artist |
+| `C` | Copy song link |
 | `D` | Download playing track |
 
 ## Installation (Load Unpacked)

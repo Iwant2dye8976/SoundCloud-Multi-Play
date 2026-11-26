@@ -18,15 +18,16 @@ Tiện ích mở rộng Chrome (Manifest V3) giúp SoundCloud tiếp tục phát
 | Phím | Chức năng |
 | --- | --- |
 | `Space` / `K` | Phát / Tạm dừng |
-| `←` / `J` | Bài trước |
-| `→` | Bài tiếp theo |
-| `Shift` + `←` / `→` | Tua lùi / tới 10 giây |
+| `←` / `→` | Tua lùi / tới 10 giây |
+| `Shift` + `←` / `J` | Bài trước |
+| `Shift` + `→` | Bài tiếp theo |
 | `↑` / `↓` | Tăng / giảm âm lượng 5% |
 | `M` | Tắt / bật tiếng |
 | `S` | Bật / tắt phát ngẫu nhiên (Shuffle) |
 | `R` | Đổi chế độ lặp lại (Repeat) |
 | `L` | Thích / bỏ thích bài hát |
 | `F` | Theo dõi / bỏ theo dõi nghệ sĩ |
+| `C` | Sao chép liên kết bài hát |
 | `D` | Tải bài hát đang phát |
 
 ## Cài đặt (Load Unpacked)
