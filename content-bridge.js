@@ -80,31 +80,43 @@
     }
 
     if (type === 'SAVE_PROGRESS') {
-      const { trackUrl, remove, entry, lastPlayed } = event.data;
+      const { trackUrl, remove, clearAll, entry, lastPlayed } = event.data;
       withSaveLock(async () => {
         if (!isContextValid()) return;
         try {
-          // Read latest storage inside lock so concurrent tabs merge by trackUrl instead of clobbering
-          const { savedProgress = {} } = await chrome.storage.local.get('savedProgress');
-          const nextProgress = { ...savedProgress };
-          if (trackUrl) {
+          // Read latest storage inside lock so concurrent tabs don't clobber a newer track's removal
+          const { savedProgress = {}, lastPlayed: storedLastPlayed = null } =
+            await chrome.storage.local.get(['savedProgress', 'lastPlayed']);
+          let nextProgress = { ...savedProgress };
+          let nextLastPlayed = lastPlayed !== undefined ? lastPlayed : storedLastPlayed;
+
+          if (clearAll) {
+            nextProgress = {};
+            nextLastPlayed = null;
+          } else if (trackUrl) {
             if (remove) {
               delete nextProgress[trackUrl];
+              if (nextLastPlayed?.trackUrl === trackUrl) {
+                nextLastPlayed = null;
+              }
             } else if (entry) {
-              nextProgress[trackUrl] = entry;
+              // Keep only the single latest played song
+              nextProgress = { [trackUrl]: entry };
             }
           }
+
           const entries = Object.entries(nextProgress);
-          const pruned = entries.length <= 50
+          const pruned = entries.length <= 1
             ? nextProgress
             : Object.fromEntries(
                 entries
                   .sort((a, b) => (b[1]?.updatedAt || 0) - (a[1]?.updatedAt || 0))
-                  .slice(0, 50)
+                  .slice(0, 1)
               );
+
           await chrome.storage.local.set({
             savedProgress: pruned,
-            lastPlayed: lastPlayed || null
+            lastPlayed: nextLastPlayed || null
           });
         } catch {
           // Ignore if extension context was invalidated

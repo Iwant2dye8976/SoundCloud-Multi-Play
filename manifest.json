@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SoundCloud Multi-Play",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Allow SoundCloud to keep playing across tabs and devices, with mini-player controls, progress bar, and track downloader.",
   "permissions": [
     "storage",

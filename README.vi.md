@@ -11,7 +11,7 @@ Tiện ích mở rộng Chrome (Manifest V3) giúp SoundCloud tiếp tục phát
 - **Điều chỉnh âm lượng & tắt tiếng** — Kéo thanh âm lượng (`0%–100%`) hoặc bật/tắt tiếng ngay từ popup.
 - **Like & Follow** — Nhấn thích bài hát đang phát hoặc theo dõi nghệ sĩ trực tiếp trong popup.
 - **Tải bài hát đang phát** — Tải về bài hát đang phát (định dạng `.m4a` AAC hoặc `.mp3` khi SoundCloud cung cấp) với thanh tiến trình trực tiếp và tự động mờ dần về nút mặc định khi tải xong.
-- **Lưu & tiếp tục tiến trình** — Tự động lưu vị trí đang nghe (tối đa 50 bài gần nhất) và khôi phục lại vị trí đó khi bạn tải lại trang hoặc quay lại nghe sau, kèm thẻ Tiếp tục (Resume) trong popup.
+- **Lưu & tiếp tục tiến trình** — Tự động lưu vị trí đang nghe cho bài hát gần nhất, đặt lại thời gian phát khi bạn nghe bài mới, chuyển bài tiếp theo hoặc nghe hết bài, kèm thẻ Tiếp tục (Resume) trong popup.
 
 ## Phím tắt (trong Popup)
 

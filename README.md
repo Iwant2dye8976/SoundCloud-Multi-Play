@@ -11,7 +11,7 @@ A Manifest V3 Chrome extension that keeps SoundCloud playing across tabs and dev
 - **Volume & mute control** — Adjust SoundCloud's volume slider (`0%–100%`) or mute/unmute from the popup.
 - **Like & Follow** — Like the playing track or follow its artist directly from the popup.
 - **Track downloader** — Download the currently playing track (`.m4a` AAC or `.mp3` when provided by SoundCloud) with a live progress bar that fades back to the default button when finished.
-- **Save & resume progress** — Automatically saves your playback position (up to the 50 most recent tracks) and restores it when you replay the track after a page refresh or return later, plus a Resume card in the popup.
+- **Save & resume progress** — Automatically saves your playback position for the latest track, resets it when you play a new song or skip/finish it, and lets you resume from the popup.
 
 ## Keyboard Shortcuts (Popup)
 

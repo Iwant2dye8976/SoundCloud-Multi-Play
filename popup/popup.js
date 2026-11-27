@@ -18,6 +18,8 @@ const playerContentEl = document.getElementById('player-content');
 const artworkEl = document.getElementById('artwork');
 const artworkFallbackEl = document.getElementById('artwork-fallback');
 const trackTitleEl = document.getElementById('track-title');
+const trackTitleTextEl = document.getElementById('track-title-text');
+const trackTitleCloneEl = document.getElementById('track-title-clone');
 const trackArtistEl = document.getElementById('track-artist');
 const focusTabBtn = document.getElementById('focus-tab-btn');
 
@@ -65,6 +67,7 @@ let activeWindowId = null;
 let selectedTabId = null;
 let lastTabsRenderKey = '';
 let lastRenderedTrackUrl = '';
+let lastRenderedTrackTitle = '';
 let isDraggingSeek = false;
 let seekLockUntil = 0;
 let lastKeySeekAt = 0;
@@ -183,6 +186,48 @@ function renderDownloadState(dl) {
   }
 }
 
+function resetTrackTitleSlide() {
+  if (!trackTitleEl) return;
+  trackTitleEl.classList.remove('is-sliding');
+  trackTitleEl.style?.removeProperty?.('--slide-duration');
+  if (trackTitleCloneEl) trackTitleCloneEl.textContent = '';
+}
+
+function updateTrackTitleSlide() {
+  if (!trackTitleEl || !trackTitleTextEl) return;
+  const titleText = trackTitleTextEl.textContent || '';
+  if (!titleText || titleText === '—' || playerContentEl.classList.contains('hidden')) {
+    resetTrackTitleSlide();
+    return;
+  }
+
+  const hadSliding = trackTitleEl.classList.contains('is-sliding');
+  if (hadSliding) {
+    trackTitleEl.classList.remove('is-sliding');
+  }
+
+  const viewportWidth = trackTitleEl.clientWidth || 0;
+  const textWidth = trackTitleEl.scrollWidth || 0;
+
+  if (viewportWidth <= 0 || textWidth <= viewportWidth + 1) {
+    resetTrackTitleSlide();
+    return;
+  }
+
+  const loopDistance = textWidth + 36;
+  const scrollSec = loopDistance / 34;
+  const totalSec = Math.max(4, Math.min(36, scrollSec / 0.94));
+  trackTitleEl.style.setProperty('--slide-duration', `${totalSec.toFixed(2)}s`);
+  if (trackTitleCloneEl && trackTitleCloneEl.textContent !== titleText) {
+    trackTitleCloneEl.textContent = titleText;
+  }
+
+  if (hadSliding) {
+    void trackTitleEl.offsetWidth;
+  }
+  trackTitleEl.classList.add('is-sliding');
+}
+
 function renderPlayerState(state) {
   latestState = state;
   const nextTrackUrl = state?.hasTrack ? normalizeTrackUrl(state.trackUrl) : '';
@@ -191,6 +236,8 @@ function renderPlayerState(state) {
     resetCopyButton();
   }
   if (!state || !state.hasTrack) {
+    lastRenderedTrackTitle = '';
+    resetTrackTitleSlide();
     emptyStateEl.classList.remove('hidden');
     playerContentEl.classList.add('hidden');
     emptyMessageEl.textContent = activeTabId
@@ -212,8 +259,13 @@ function renderPlayerState(state) {
   emptyStateEl.classList.add('hidden');
   playerContentEl.classList.remove('hidden');
 
-  trackTitleEl.textContent = state.title || 'Unknown Track';
-  trackTitleEl.title = state.title || '';
+  const nextTitle = state.title || 'Unknown Track';
+  if (nextTitle !== lastRenderedTrackTitle) {
+    lastRenderedTrackTitle = nextTitle;
+    trackTitleTextEl.textContent = nextTitle;
+    trackTitleEl.title = state.title || '';
+    updateTrackTitleSlide();
+  }
   trackArtistEl.textContent = state.artist || 'SoundCloud';
   trackArtistEl.title = state.artist || '';
 

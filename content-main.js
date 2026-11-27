@@ -15,6 +15,8 @@
   const restoredTracks = new Set();
   const restoreSeekAttempts = new Map();
   let lastSavedSignature = '';
+  let suppressedSaveTrackUrl = '';
+  let suppressedSaveUntil = 0;
   let pendingResume = null;
   let pendingSeekTargetSec = 0;
   let pendingSeekUntil = 0;
@@ -33,7 +35,14 @@
         } else {
           delete mediaSessionHandlers[action];
         }
-        return origSetActionHandler(action, handler);
+        const wrappedHandler =
+          action === 'nexttrack' && typeof handler === 'function'
+            ? function (...args) {
+                resetSavedOnNext();
+                return handler.apply(this, args);
+              }
+            : handler;
+        return origSetActionHandler(action, wrappedHandler);
       };
     }
     if (typeof ms.setPositionState === 'function') {
@@ -482,6 +491,7 @@
         document.querySelector('.skipControl__previous')?.click();
         break;
       case 'next':
+        resetSavedOnNext();
         document.querySelector('.skipControl__next')?.click();
         break;
       case 'toggleShuffle':
@@ -540,31 +550,98 @@
 
   function pruneSavedProgress(map) {
     const entries = Object.entries(map || {});
-    if (entries.length <= 50) return map;
+    if (entries.length <= 1) return map;
     entries.sort((a, b) => (b[1]?.updatedAt || 0) - (a[1]?.updatedAt || 0));
-    return Object.fromEntries(entries.slice(0, 50));
+    return Object.fromEntries(entries.slice(0, 1));
+  }
+
+  function resetSavedProgress(targetUrl, suppressMs = 0) {
+    const cleanTarget = normalizeTrackUrl(targetUrl);
+    if (!cleanTarget) return;
+    if (suppressMs > 0) {
+      suppressedSaveTrackUrl = cleanTarget;
+      suppressedSaveUntil = Date.now() + suppressMs;
+    }
+
+    const hadEntry = Boolean(savedProgress[cleanTarget]);
+    const hadLast = normalizeTrackUrl(lastPlayed?.trackUrl) === cleanTarget;
+    if (!hadEntry && !hadLast) return;
+
+    delete savedProgress[cleanTarget];
+    if (hadLast) lastPlayed = null;
+    lastSavedSignature = `${cleanTarget}:reset`;
+    restoredTracks.delete(cleanTarget);
+    restoreSeekAttempts.delete(cleanTarget);
+
+    window.postMessage(
+      {
+        source: MSG_SOURCE,
+        type: 'SAVE_PROGRESS',
+        trackUrl: cleanTarget,
+        remove: true,
+        entry: null,
+        lastPlayed: null
+      },
+      '*'
+    );
+  }
+
+  function resetSavedOnNext() {
+    const state = getPlayerState();
+    const curUrl = normalizeTrackUrl(state.trackUrl);
+    if (curUrl) {
+      suppressedSaveTrackUrl = curUrl;
+      suppressedSaveUntil = Date.now() + 3000;
+    }
+    const urls = new Set(Object.keys(savedProgress));
+    const lastNorm = normalizeTrackUrl(lastPlayed?.trackUrl);
+    if (lastNorm) urls.add(lastNorm);
+    for (const url of urls) {
+      resetSavedProgress(url, url === curUrl ? 3000 : 0);
+    }
   }
 
   function persistCurrentProgress() {
     const state = getPlayerState();
-    if (!state.hasTrack || !state.trackUrl || state.durationSec <= 15) return;
+    if (!state.hasTrack || !state.trackUrl) return;
 
     const cleanUrl = normalizeTrackUrl(state.trackUrl);
+    if (!cleanUrl) return;
+
+    const pendingTarget =
+      pendingResume && Date.now() - pendingResume.requestedAt <= RESUME_TTL_MS
+        ? pendingResume.trackUrl
+        : '';
+    if (state.isPlaying && (!pendingTarget || pendingTarget === cleanUrl)) {
+      const staleUrls = new Set(Object.keys(savedProgress));
+      const lastNorm = normalizeTrackUrl(lastPlayed?.trackUrl);
+      if (lastNorm) staleUrls.add(lastNorm);
+      for (const staleUrl of staleUrls) {
+        if (staleUrl && staleUrl !== cleanUrl) {
+          resetSavedProgress(staleUrl);
+        }
+      }
+    }
+
+    if (state.durationSec <= 15) return;
+
     const sec = Math.floor(state.currentTimeSec);
     const dur = Math.floor(state.durationSec);
 
-    let progressAction = '';
-    let changed = false;
+    if (suppressedSaveTrackUrl === cleanUrl && Date.now() < suppressedSaveUntil) {
+      return;
+    }
+
     if (sec >= dur - 5) {
-      if (savedProgress[cleanUrl]) {
-        delete savedProgress[cleanUrl];
-        progressAction = 'delete';
-        changed = true;
-      }
-    } else if (sec >= 5) {
+      resetSavedProgress(cleanUrl);
+      return;
+    }
+
+    if (sec >= 5) {
       const prev = savedProgress[cleanUrl];
-      if (!prev || Math.abs(prev.timeSec - sec) >= 2) {
-        savedProgress[cleanUrl] = {
+      const sig = `${cleanUrl}:${sec}:1`;
+      if (!prev || Math.abs(prev.timeSec - sec) >= 2 || normalizeTrackUrl(lastPlayed?.trackUrl) !== cleanUrl) {
+        const entry = {
           timeSec: sec,
           durationSec: dur,
           title: state.title,
@@ -572,40 +649,24 @@
           artworkUrl: state.artworkUrl,
           updatedAt: Date.now()
         };
-        savedProgress = pruneSavedProgress(savedProgress);
-        progressAction = 'upsert';
-        changed = true;
+        savedProgress = { [cleanUrl]: entry };
+        lastPlayed = {
+          trackUrl: cleanUrl,
+          ...entry
+        };
+        lastSavedSignature = sig;
+        window.postMessage(
+          {
+            source: MSG_SOURCE,
+            type: 'SAVE_PROGRESS',
+            trackUrl: cleanUrl,
+            remove: false,
+            entry,
+            lastPlayed
+          },
+          '*'
+        );
       }
-    }
-
-    const lastChanged = sec >= 5 && sec < dur - 5;
-    const nextLast = lastChanged
-      ? {
-          trackUrl: cleanUrl,
-          timeSec: sec,
-          durationSec: dur,
-          title: state.title,
-          artist: state.artist,
-          artworkUrl: state.artworkUrl,
-          updatedAt: Date.now()
-        }
-      : lastPlayed;
-
-    const sig = `${cleanUrl}:${sec}:${Boolean(savedProgress[cleanUrl])}`;
-    if (changed || (lastChanged && sig !== lastSavedSignature)) {
-      lastSavedSignature = sig;
-      lastPlayed = nextLast;
-      window.postMessage(
-        {
-          source: MSG_SOURCE,
-          type: 'SAVE_PROGRESS',
-          trackUrl: cleanUrl,
-          remove: progressAction === 'delete',
-          entry: progressAction === 'upsert' ? savedProgress[cleanUrl] : null,
-          lastPlayed
-        },
-        '*'
-      );
     }
   }
 
@@ -809,13 +870,15 @@
     if (!pendingResume || pendingResume.timeSec < 5) return;
     const existing = savedProgress[pendingResume.trackUrl];
     if (!existing || existing.timeSec < 5) {
-      savedProgress[pendingResume.trackUrl] = {
-        timeSec: Math.floor(pendingResume.timeSec),
-        durationSec: 0,
-        title: '',
-        artist: '',
-        artworkUrl: '',
-        updatedAt: Date.now()
+      savedProgress = {
+        [pendingResume.trackUrl]: {
+          timeSec: Math.floor(pendingResume.timeSec),
+          durationSec: 0,
+          title: '',
+          artist: '',
+          artworkUrl: '',
+          updatedAt: Date.now()
+        }
       };
     }
   }
@@ -931,6 +994,15 @@
       persistCurrentProgress();
     }
   });
+  document.addEventListener(
+    'click',
+    (event) => {
+      if (event.target?.closest?.('.skipControl__next')) {
+        resetSavedOnNext();
+      }
+    },
+    true
+  );
 
   function sanitizeFilename(name) {
     return (name || 'soundcloud-track')
@@ -1166,7 +1238,7 @@
 
     if (type === 'SET_SAVED_PROGRESS') {
       const incoming = event.data.savedProgress || {};
-      savedProgress = { ...incoming };
+      savedProgress = pruneSavedProgress({ ...incoming });
       ensurePendingProgressEntry();
       savedProgressLoaded = true;
       lastPlayed = event.data.lastPlayed || null;

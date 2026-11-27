@@ -49,6 +49,9 @@ function createFakeElement(tag = 'div', opts = {}) {
     style: {
       setProperty(k, v) {
         this[k] = v;
+      },
+      removeProperty(k) {
+        delete this[k];
       }
     },
     children,
@@ -124,6 +127,11 @@ function createTimerHarness() {
           entry.fn();
         }
       }
+    },
+    runIntervals() {
+      for (const entry of [...timers.values()]) {
+        if (entry.isInterval) entry.fn();
+      }
     }
   };
 }
@@ -135,6 +143,8 @@ function loadContentMainHarness() {
   const postedMessages = [];
 
   const playEl = createFakeElement('button', { classes: ['playControl', 'playing'] });
+  const nextEl = createFakeElement('button', { classes: ['skipControl__next'] });
+  nextEl.closest = (sel) => (sel === '.skipControl__next' ? nextEl : null);
   const titleSpan = createFakeElement('span', { textContent: 'Track A' });
   const titleEl = createFakeElement('a', {
     href: 'https://soundcloud.com/artist/track-a?si=abc',
@@ -155,6 +165,7 @@ function loadContentMainHarness() {
 
   const elementsBySelector = {
     '.playControl': playEl,
+    '.skipControl__next': nextEl,
     '.playbackSoundBadge__titleLink': titleEl,
     '.playbackSoundBadge__lightLink': artistEl,
     '.playbackTimeline__progressWrapper': progressWrap
@@ -239,11 +250,16 @@ function loadContentMainHarness() {
 
   return {
     winObj,
+    timers,
+    playEl,
+    nextEl,
     titleEl,
     titleSpan,
     progressWrap,
     wrapperEvents,
     postedMessages,
+    registeredHandlers,
+    documentListeners,
     sendBridgeMessage,
     getLatestPositionState: () => latestPositionState
   };
@@ -307,7 +323,79 @@ test('content-main seekDelta uses seekto handler with stacked targets and falls 
   assert.equal(h.wrapperEvents[0].clientX, 125);
 });
 
-test('content-bridge merges SAVE_PROGRESS writes per track across concurrent tabs and caps at 50 entries', async () => {
+test('content-main only keeps latest saved track and resets on new song, track end, or next', () => {
+  const h = loadContentMainHarness();
+  h.sendBridgeMessage({ type: 'SET_SAVED_PROGRESS', savedProgress: {}, lastPlayed: null });
+
+  // Play Track A at 45s / 200s -> saves Track A
+  h.titleEl.setAttribute('href', 'https://soundcloud.com/artist/track-a');
+  h.titleSpan.textContent = 'Track A';
+  h.progressWrap.setAttribute('aria-valuenow', '45');
+  h.progressWrap.setAttribute('aria-valuemax', '200');
+  h.postedMessages.length = 0;
+  h.timers.runIntervals();
+
+  let saveMsg = h.postedMessages.find((m) => m.type === 'SAVE_PROGRESS');
+  assert.ok(saveMsg);
+  assert.equal(saveMsg.trackUrl, 'https://soundcloud.com/artist/track-a');
+  assert.equal(saveMsg.remove, false);
+  assert.equal(saveMsg.entry.timeSec, 45);
+  assert.equal(saveMsg.lastPlayed.trackUrl, 'https://soundcloud.com/artist/track-a');
+
+  // Listening to a new track (Track B at 1s < 5s) resets Track A's saved play time immediately
+  h.titleEl.setAttribute('href', 'https://soundcloud.com/artist/track-b');
+  h.titleSpan.textContent = 'Track B';
+  h.progressWrap.setAttribute('aria-valuenow', '1');
+  h.progressWrap.setAttribute('aria-valuemax', '180');
+  h.postedMessages.length = 0;
+  h.timers.runIntervals();
+
+  saveMsg = h.postedMessages.find((m) => m.type === 'SAVE_PROGRESS');
+  assert.ok(saveMsg);
+  assert.equal(saveMsg.trackUrl, 'https://soundcloud.com/artist/track-a');
+  assert.equal(saveMsg.remove, true);
+  assert.equal(saveMsg.lastPlayed, null);
+
+  // Track B reaches 25s -> saved as the single latest track
+  h.progressWrap.setAttribute('aria-valuenow', '25');
+  h.postedMessages.length = 0;
+  h.timers.runIntervals();
+  saveMsg = h.postedMessages.find((m) => m.type === 'SAVE_PROGRESS');
+  assert.equal(saveMsg.trackUrl, 'https://soundcloud.com/artist/track-b');
+  assert.equal(saveMsg.remove, false);
+  assert.equal(saveMsg.entry.timeSec, 25);
+
+  // Reaching end of Track B (176s / 180s) resets Track B's saved play time
+  h.progressWrap.setAttribute('aria-valuenow', '176');
+  h.postedMessages.length = 0;
+  h.timers.runIntervals();
+  saveMsg = h.postedMessages.find((m) => m.type === 'SAVE_PROGRESS');
+  assert.equal(saveMsg.trackUrl, 'https://soundcloud.com/artist/track-b');
+  assert.equal(saveMsg.remove, true);
+  assert.equal(saveMsg.lastPlayed, null);
+
+  // Save Track C at 30s, then trigger Next -> resets Track C immediately and suppresses stale re-save
+  h.titleEl.setAttribute('href', 'https://soundcloud.com/artist/track-c');
+  h.titleSpan.textContent = 'Track C';
+  h.progressWrap.setAttribute('aria-valuenow', '30');
+  h.progressWrap.setAttribute('aria-valuemax', '220');
+  h.timers.runIntervals();
+
+  h.postedMessages.length = 0;
+  h.sendBridgeMessage({ type: 'PLAYER_COMMAND', command: 'next', requestId: 10 });
+  saveMsg = h.postedMessages.find((m) => m.type === 'SAVE_PROGRESS');
+  assert.ok(saveMsg);
+  assert.equal(saveMsg.trackUrl, 'https://soundcloud.com/artist/track-c');
+  assert.equal(saveMsg.remove, true);
+  assert.equal(saveMsg.lastPlayed, null);
+
+  // Interval tick right after Next (before DOM switches) does not re-save Track C
+  h.postedMessages.length = 0;
+  h.timers.runIntervals();
+  assert.equal(h.postedMessages.find((m) => m.type === 'SAVE_PROGRESS'), undefined);
+});
+
+test('content-bridge keeps only the latest saved track across concurrent tabs and prunes legacy entries', async () => {
   const storage = { enabled: true, savedProgress: { 'https://soundcloud.com/a/one': { timeSec: 40, updatedAt: 100 } }, lastPlayed: null };
   const onStorageChanged = new Set();
   const locks = new Map();
@@ -392,23 +480,25 @@ test('content-bridge merges SAVE_PROGRESS writes per track across concurrent tab
 
   await new Promise((r) => setTimeout(r, 25));
 
-  assert.ok(storage.savedProgress['https://soundcloud.com/a/one']);
-  assert.equal(storage.savedProgress['https://soundcloud.com/a/two'].timeSec, 55);
-  assert.equal(storage.savedProgress['https://soundcloud.com/a/three'].timeSec, 75);
-
-  // Removal deletes only the targeted track
-  tabA.sendSave({ trackUrl: 'https://soundcloud.com/a/two', remove: true, entry: null, lastPlayed: storage.lastPlayed });
-  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(storage.savedProgress['https://soundcloud.com/a/one'], undefined);
   assert.equal(storage.savedProgress['https://soundcloud.com/a/two'], undefined);
   assert.equal(storage.savedProgress['https://soundcloud.com/a/three'].timeSec, 75);
+  assert.equal(Object.keys(storage.savedProgress).length, 1);
 
-  // Seeding >50 entries prunes down to 50 newest
-  for (let i = 0; i < 55; i++) {
+  // Removal deletes the targeted track and clears matching lastPlayed
+  storage.lastPlayed = { trackUrl: 'https://soundcloud.com/a/three', timeSec: 75 };
+  tabA.sendSave({ trackUrl: 'https://soundcloud.com/a/three', remove: true, entry: null, lastPlayed: null });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(Object.keys(storage.savedProgress).length, 0);
+  assert.equal(storage.lastPlayed, null);
+
+  // Legacy >1 entries prune down to the 1 newest on save
+  for (let i = 0; i < 10; i++) {
     storage.savedProgress[`https://soundcloud.com/a/bulk-${i}`] = { timeSec: 20, updatedAt: i };
   }
   tabB.sendSave({ trackUrl: 'https://soundcloud.com/a/newest', remove: false, entry: { timeSec: 12, updatedAt: 9999 }, lastPlayed: null });
   await new Promise((r) => setTimeout(r, 20));
-  assert.equal(Object.keys(storage.savedProgress).length, 50);
+  assert.equal(Object.keys(storage.savedProgress).length, 1);
   assert.ok(storage.savedProgress['https://soundcloud.com/a/newest']);
   assert.equal(storage.savedProgress['https://soundcloud.com/a/bulk-0'], undefined);
 });
@@ -456,6 +546,9 @@ test('popup focuses tab window, avoids redundant tabsBar rebuilds, resets copy e
     artwork: createFakeElement('img'),
     'artwork-fallback': createFakeElement('div'),
     'track-title': createFakeElement('div'),
+    'track-title-marquee': createFakeElement('span'),
+    'track-title-text': createFakeElement('span'),
+    'track-title-clone': createFakeElement('span'),
     'track-artist': createFakeElement('div'),
     'focus-tab-btn': createFakeElement('button'),
     'progress-range': createFakeElement('input', { id: 'progress-range', value: '0' }),
@@ -619,4 +712,31 @@ test('popup focuses tab window, avoids redundant tabsBar rebuilds, resets copy e
   mockState = { ...mockState, muted: true, volume: 0.65 };
   await popupContext.refreshState();
   assert.equal(volRange.value, '0');
+
+  // Song title sliding: activates when overflowing, stays active across polls, and resets on short title
+  const trackTitle = elementsById['track-title'];
+  const trackTitleText = elementsById['track-title-text'];
+  const trackTitleClone = elementsById['track-title-clone'];
+  trackTitle.clientWidth = 180;
+  trackTitle.scrollWidth = 340;
+
+  const longTitle = 'A Very Long SoundCloud Track Title That Needs Sliding Marquee';
+  mockState = { ...mockState, title: longTitle };
+  await popupContext.refreshState();
+  assert.equal(trackTitleText.textContent, longTitle);
+  assert.equal(trackTitleClone.textContent, longTitle);
+  assert.equal(trackTitle.classList.contains('is-sliding'), true);
+  assert.ok(trackTitle.style['--slide-duration']);
+
+  // Polling with the same title preserves sliding state
+  await popupContext.refreshState();
+  assert.equal(trackTitle.classList.contains('is-sliding'), true);
+
+  // Switching to a short title disables sliding and clears clone
+  trackTitle.scrollWidth = 110;
+  mockState = { ...mockState, title: 'Short' };
+  await popupContext.refreshState();
+  assert.equal(trackTitleText.textContent, 'Short');
+  assert.equal(trackTitleClone.textContent, '');
+  assert.equal(trackTitle.classList.contains('is-sliding'), false);
 });
