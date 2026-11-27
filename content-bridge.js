@@ -153,6 +153,9 @@
       } else if (message?.type === 'DOWNLOAD_TRACK') {
         const downloadState = await requestMainWorld('DOWNLOAD_TRACK');
         sendResponse({ ok: true, downloadState });
+      } else if (message?.type === 'CANCEL_DOWNLOAD') {
+        const downloadState = await requestMainWorld('CANCEL_DOWNLOAD');
+        sendResponse({ ok: true, downloadState });
       } else if (message?.type === 'PLAY_ON_PAGE') {
         const state = await requestMainWorld('PLAY_ON_PAGE', {
           targetUrl: message.targetUrl || '',

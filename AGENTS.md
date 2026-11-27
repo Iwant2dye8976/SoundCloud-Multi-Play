@@ -4,24 +4,27 @@ Guidance for coding agents working in `C:\soundcloud` (**SoundCloud Multi-Play**
 
 ## Architecture
 
-- **[manifest.json](manifest.json)**: MV3 manifest (`storage`, `tabs`, host `*://*.soundcloud.com/*`). No background service worker; injects two content scripts at `document_start` and serves `popup/popup.html` as `action.default_popup`.
+- **[manifest.json](manifest.json)**: MV3 manifest (`storage`, `tabs`, host `*://*.soundcloud.com/*`, 4 global `commands`). Injects two content scripts at `document_start`, registers `background.js` as the service worker, and serves `popup/popup.html` as `action.default_popup`.
+- **[background.js](background.js)**: Ephemeral MV3 service worker (no state in module globals) that syncs the `OFF` action badge with `enabled` in `chrome.storage.local` and routes `chrome.commands.onCommand` (`toggle-play`, `next-track`, `prev-track`, `like-track`) to the target SoundCloud tab.
 - **[content-main.js](content-main.js)** (`world: "MAIN"`):
   - Intercepts SoundCloud multi-device/tab stop signals across `EventSource` (`/tsub/subscribe`), `XMLHttpRequest` / `fetch` (`/tpub/publish`), and `Storage.prototype.setItem` / `storage` events (`trinity-broadcast`) when `enabled` is true.
-  - Reads SoundCloud DOM & `navigator.mediaSession` state, executes playback/seek/volume/social commands, handles resume-on-load/navigation (`pendingResume`, `maybeRestoreProgress`), and downloads HLS/progressive streams (`startTrackDownload`).
+  - Reads SoundCloud DOM & `navigator.mediaSession` state, observes immediate track changes (`MutationObserver` + `setPositionState`), executes playback/seek/volume/social commands, handles resume-on-load/navigation (`pendingResume`, `maybeRestoreProgress`), and downloads HLS/progressive streams with timeout/retry and cancellation (`startTrackDownload`, `cancelTrackDownload`).
 - **[content-bridge.js](content-bridge.js)** (`world: "ISOLATED"`):
   - Bridges `window.postMessage` (`source: 'sc-multiplay'`) with `chrome.storage.local` and `chrome.runtime.onMessage` from the popup.
   - Serializes `SAVE_PROGRESS` writes with `withSaveLock` (`navigator.locks.request('sc-multiplay-save', ...)`).
 - **[popup/popup.html](popup/popup.html)**, **[popup/popup.css](popup/popup.css)**, **[popup/popup.js](popup/popup.js)**:
-  - 348px-wide dark mini-player popup polling the selected SoundCloud tab every 500ms (`refreshState()`), with multi-tab switching, sliding marquee track title, seek/volume sliders, social actions, download progress, and keyboard shortcuts.
-- **[tests/extension.test.js](tests/extension.test.js)**:
-  - Uses Node's built-in `node:test`, `node:assert/strict`, and `node:vm` to run `content-main.js`, `content-bridge.js`, and `popup/popup.js` against mocked DOM/Chrome APIs.
+  - 348px-wide dark mini-player popup using non-overlapping 500ms polling (`pollLoop()`, `refreshSeq` stale-response guard), multi-tab switching with per-tab player state labels, sliding marquee track title (click to copy `"Artist - Title"`), seek/volume sliders, social actions, cancelable download progress, and keyboard shortcuts.
+- **[tests/extension.test.js](tests/extension.test.js)** & **[tests/smoke-chrome.mjs](tests/smoke-chrome.mjs)**:
+  - `tests/extension.test.js` uses Node's built-in `node:test`, `node:assert/strict`, and `node:vm` against mocked DOM/Chrome APIs.
+  - `tests/smoke-chrome.mjs` launches installed headless Chrome/Edge over DevTools WebSocket to verify live popup marquee animation, click-to-copy title, and short-title reset.
 
 ## Verification
 
-Run the test suite after any code change:
+Run the test suite and Chrome smoke check after code changes:
 
 ```sh
 node --test tests/extension.test.js
+node tests/smoke-chrome.mjs
 ```
 
 There is no bundler or build step. Manual browser verification requires reloading the unpacked extension in `chrome://extensions` and refreshing any open `soundcloud.com` tab.

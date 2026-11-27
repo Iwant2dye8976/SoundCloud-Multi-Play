@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate manifest and JavaScript syntax
+        run: |
+          node -e "JSON.parse(require('fs').readFileSync('manifest.json', 'utf8'))"
+          node --check background.js
+          node --check content-bridge.js
+          node --check content-main.js
+          node --check popup/popup.js
+          node --check tests/extension.test.js
+          node --check tests/smoke-chrome.mjs
+      - name: Run unit tests
+        run: node --test tests/extension.test.js

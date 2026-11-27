@@ -10,6 +10,7 @@ const ROOT = path.resolve(__dirname, '..');
 const CONTENT_MAIN_SRC = fs.readFileSync(path.join(ROOT, 'content-main.js'), 'utf8');
 const CONTENT_BRIDGE_SRC = fs.readFileSync(path.join(ROOT, 'content-bridge.js'), 'utf8');
 const POPUP_SRC = fs.readFileSync(path.join(ROOT, 'popup', 'popup.js'), 'utf8');
+const BACKGROUND_SRC = fs.readFileSync(path.join(ROOT, 'background.js'), 'utf8');
 
 function createClassList(initial = []) {
   const set = new Set(initial);
@@ -205,6 +206,9 @@ function loadContentMainHarness() {
     EventSource: undefined,
     XMLHttpRequest: function XHR() {},
     fetch: async () => new Response('{}'),
+    AbortController,
+    DOMException,
+    queueMicrotask,
     navigator: {
       mediaSession: {
         setActionHandler(action, handler) {
@@ -393,6 +397,105 @@ test('content-main only keeps latest saved track and resets on new song, track e
   h.postedMessages.length = 0;
   h.timers.runIntervals();
   assert.equal(h.postedMessages.find((m) => m.type === 'SAVE_PROGRESS'), undefined);
+});
+
+test('content-main detects track change via setPositionState and supports download cancel', async () => {
+  const h = loadContentMainHarness();
+  h.sendBridgeMessage({ type: 'SET_SAVED_PROGRESS', savedProgress: {}, lastPlayed: null });
+
+  h.titleEl.setAttribute('href', 'https://soundcloud.com/artist/track-x');
+  h.titleSpan.textContent = 'Track X';
+  h.progressWrap.setAttribute('aria-valuenow', '40');
+  h.progressWrap.setAttribute('aria-valuemax', '200');
+  h.timers.runIntervals();
+
+  // Switch to Track Y and fire setPositionState without waiting for the 1500ms interval
+  h.titleEl.setAttribute('href', 'https://soundcloud.com/artist/track-y');
+  h.titleSpan.textContent = 'Track Y';
+  h.progressWrap.setAttribute('aria-valuenow', '1');
+  h.postedMessages.length = 0;
+  h.winObj.navigator.mediaSession.setPositionState({ duration: 180, position: 1, playbackRate: 1 });
+  await new Promise((r) => setTimeout(r, 5));
+
+  const resetMsg = h.postedMessages.find((m) => m.type === 'SAVE_PROGRESS');
+  assert.ok(resetMsg);
+  assert.equal(resetMsg.trackUrl, 'https://soundcloud.com/artist/track-x');
+  assert.equal(resetMsg.remove, true);
+
+  // Cancel download when idle is a no-op and returns idle state
+  const cancelResp = h.sendBridgeMessage({ type: 'CANCEL_DOWNLOAD', requestId: 99 });
+  assert.equal(cancelResp.status, 'idle');
+});
+
+test('background syncs OFF badge and dispatches global commands to target tab', async () => {
+  const storageLocal = { enabled: false };
+  const storageSession = { selectedTabId: 202 };
+  const badgeTexts = [];
+  const sentToTabs = [];
+  const listeners = { installed: [], startup: [], storage: [], commands: [] };
+
+  const bgContext = {
+    chrome: {
+      storage: {
+        local: {
+          async get() {
+            return { ...storageLocal };
+          }
+        },
+        session: {
+          async get() {
+            return { ...storageSession };
+          }
+        },
+        onChanged: {
+          addListener(fn) {
+            listeners.storage.push(fn);
+          }
+        }
+      },
+      action: {
+        async setBadgeBackgroundColor() {},
+        async setBadgeText(info) {
+          badgeTexts.push(info.text);
+        }
+      },
+      tabs: {
+        async query() {
+          return [
+            { id: 201, audible: false, active: false },
+            { id: 202, audible: true, active: false }
+          ];
+        },
+        async sendMessage(tabId, msg) {
+          sentToTabs.push([tabId, msg]);
+        }
+      },
+      runtime: {
+        onInstalled: { addListener: (fn) => listeners.installed.push(fn) },
+        onStartup: { addListener: (fn) => listeners.startup.push(fn) }
+      },
+      commands: {
+        onCommand: { addListener: (fn) => listeners.commands.push(fn) }
+      }
+    }
+  };
+
+  vm.runInNewContext(BACKGROUND_SRC, bgContext);
+  listeners.installed[0]();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(badgeTexts.at(-1), 'OFF');
+
+  storageLocal.enabled = true;
+  listeners.storage[0]({ enabled: { newValue: true } }, 'local');
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(badgeTexts.at(-1), '');
+
+  await listeners.commands[0]('toggle-play');
+  await listeners.commands[0]('next-track');
+  assert.deepEqual(JSON.parse(JSON.stringify(sentToTabs)), [
+    [202, { type: 'PLAYER_COMMAND', command: 'togglePlay' }],
+    [202, { type: 'PLAYER_COMMAND', command: 'next' }]
+  ]);
 });
 
 test('content-bridge keeps only the latest saved track across concurrent tabs and prunes legacy entries', async () => {
@@ -597,6 +700,8 @@ test('popup focuses tab window, avoids redundant tabsBar rebuilds, resets copy e
 
   const tabUpdates = [];
   const windowUpdates = [];
+  const copiedTexts = [];
+  const sentMessages = [];
   let shouldRejectClipboard = true;
   let closed = false;
 
@@ -609,8 +714,9 @@ test('popup focuses tab window, avoids redundant tabsBar rebuilds, resets copy e
     window: null,
     navigator: {
       clipboard: {
-        async writeText() {
+        async writeText(text) {
           if (shouldRejectClipboard) throw new Error('clipboard blocked');
+          copiedTexts.push(text);
         }
       }
     },
@@ -630,7 +736,14 @@ test('popup focuses tab window, avoids redundant tabsBar rebuilds, resets copy e
             { id: 102, windowId: 56, audible: false, active: true, title: 'Discover' }
           ];
         },
-        async sendMessage() {
+        async sendMessage(tabId, msg) {
+          sentMessages.push([tabId, msg]);
+          if (msg?.type === 'CANCEL_DOWNLOAD') {
+            return { ok: true, downloadState: { status: 'idle', progress: 0, error: '', filename: '', id: 1 } };
+          }
+          if (tabId === 102) {
+            return { ok: true, state: { hasTrack: false } };
+          }
           return { ok: true, state: { ...mockState } };
         },
         async update(tabId, props) {
@@ -739,4 +852,21 @@ test('popup focuses tab window, avoids redundant tabsBar rebuilds, resets copy e
   assert.equal(trackTitleText.textContent, 'Short');
   assert.equal(trackTitleClone.textContent, '');
   assert.equal(trackTitle.classList.contains('is-sliding'), false);
+
+  // Clicking #track-title copies "Artist - Title" and shows copied state
+  copiedTexts.length = 0;
+  trackTitle.click();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(copiedTexts[0], 'Artist One - Short');
+  assert.equal(trackTitle.classList.contains('copied'), true);
+
+  // Clicking download while downloading sends CANCEL_DOWNLOAD
+  mockState = { ...mockState, downloadState: { status: 'downloading', progress: 42, error: '', filename: '', id: 5 } };
+  await popupContext.refreshState();
+  assert.equal(elementsById['btn-download'].classList.contains('downloading'), true);
+  sentMessages.length = 0;
+  elementsById['btn-download'].click();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.ok(sentMessages.some(([, m]) => m.type === 'CANCEL_DOWNLOAD'));
+  assert.equal(elementsById['btn-download'].classList.contains('downloading'), false);
 });

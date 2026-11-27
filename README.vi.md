@@ -6,12 +6,22 @@ Tiện ích mở rộng Chrome (Manifest V3) giúp SoundCloud tiếp tục phát
 
 ## Tính năng
 
-- **Phát nhạc đa thiết bị / đa tab** — Giữ SoundCloud tiếp tục phát ngay cả khi bạn bắt đầu phát ở tab trình duyệt khác hoặc thiết bị khác (`"Paused because you started playing on another device."`). Có thể bật/tắt nhanh trong popup.
-- **Điều khiển mini-player & thanh tiến trình tua được** — Hiển thị ảnh bìa, tên bài hát, nghệ sĩ, thời gian đã phát/tổng thời lượng và cho phép kéo tua trực tiếp đến bất kỳ vị trí nào.
+- **Phát nhạc đa thiết bị / đa tab** — Giữ SoundCloud tiếp tục phát ngay cả khi bạn bắt đầu phát ở tab trình duyệt khác hoặc thiết bị khác (`"Paused because you started playing on another device."`). Có thể bật/tắt nhanh trong popup (hiển thị nhãn `OFF` trên biểu tượng khi tạm dừng).
+- **Điều khiển mini-player & thanh tiến trình tua được** — Hiển thị ảnh bìa, tên bài hát chạy chữ khi quá dài (nhấn để sao chép `"Nghệ sĩ - Tên bài"`), nghệ sĩ, thời gian đã phát/tổng thời lượng, tua trực tiếp đến bất kỳ vị trí nào và chuyển nhanh giữa nhiều tab SoundCloud.
+- **Phím tắt toàn cục & trong popup** — Điều khiển Phát/Tạm dừng, Bài tiếp theo, Bài trước và Thích từ bất kỳ tab nào (tùy chỉnh tại `chrome://extensions/shortcuts`), cùng đầy đủ phím tắt trong popup.
 - **Điều chỉnh âm lượng & tắt tiếng** — Kéo thanh âm lượng (`0%–100%`) hoặc bật/tắt tiếng ngay từ popup.
 - **Like & Follow** — Nhấn thích bài hát đang phát hoặc theo dõi nghệ sĩ trực tiếp trong popup.
-- **Tải bài hát đang phát** — Tải về bài hát đang phát (định dạng `.m4a` AAC hoặc `.mp3` khi SoundCloud cung cấp) với thanh tiến trình trực tiếp và tự động mờ dần về nút mặc định khi tải xong.
+- **Tải bài hát đang phát** — Tải về bài hát đang phát (định dạng `.m4a` AAC hoặc `.mp3` khi SoundCloud cung cấp) với thanh tiến trình trực tiếp, tự thử lại khi timeout và hỗ trợ nhấn để hủy tải.
 - **Lưu & tiếp tục tiến trình** — Tự động lưu vị trí đang nghe cho bài hát gần nhất, đặt lại thời gian phát khi bạn nghe bài mới, chuyển bài tiếp theo hoặc nghe hết bài, kèm thẻ Tiếp tục (Resume) trong popup.
+
+## Phím tắt toàn cục
+
+| Phím mặc định | Chức năng |
+| --- | --- |
+| `Alt` + `Shift` + `P` | Phát / Tạm dừng |
+| `Alt` + `Shift` + `N` | Bài tiếp theo |
+| `Alt` + `Shift` + `B` | Bài trước |
+| `Alt` + `Shift` + `L` | Thích / bỏ thích bài hát |
 
 ## Phím tắt (trong Popup)
 
@@ -42,6 +52,7 @@ Tiện ích mở rộng Chrome (Manifest V3) giúp SoundCloud tiếp tục phát
 ```text
 soundcloud/
 ├── manifest.json          # Tệp cấu hình tiện ích (MV3)
+├── background.js          # Service worker MV3 xử lý phím tắt toàn cục và nhãn OFF
 ├── content-main.js        # Hook ở MAIN world, điều khiển phát nhạc, tải bài và đồng bộ tiến trình
 ├── content-bridge.js      # Cầu nối ISOLATED world cho chrome.storage và giao tiếp popup
 ├── icons/

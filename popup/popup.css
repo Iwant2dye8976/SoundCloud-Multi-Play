@@ -210,6 +210,7 @@ input:checked + .slider::before {
 
 .tab-chip.audible .tab-chip-dot {
   background: var(--ok);
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.24);
 }
 
 .tab-chip-text {
@@ -394,6 +395,13 @@ input:checked + .slider::before {
 }
 
 .track-title {
+  display: block;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  font-family: inherit;
   font-size: 13px;
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -401,6 +409,16 @@ input:checked + .slider::before {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.track-title:hover {
+  color: #fff4ed;
+}
+
+.track-title.copied {
+  color: #86efac;
 }
 
 .track-title-clone {
@@ -787,6 +805,10 @@ input:checked + .slider::before {
 .download-btn.error {
   border-color: rgba(239, 68, 68, 0.55);
   color: #fca5a5;
+}
+
+.download-btn.downloading:hover {
+  border-color: rgba(239, 68, 68, 0.55);
 }
 
 /* Keyboard Shortcuts Bar */

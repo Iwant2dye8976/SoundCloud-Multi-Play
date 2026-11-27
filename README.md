@@ -6,12 +6,22 @@ A Manifest V3 Chrome extension that keeps SoundCloud playing across tabs and dev
 
 ## Features
 
-- **Multi-location playback bypass** — Keeps SoundCloud playing even when you start playback in another browser tab or on another device (`"Paused because you started playing on another device."`). Can be toggled on or off from the popup.
-- **Mini-player controls & seekable progress bar** — View the playing track's artwork, title, artist, and elapsed/total time, and scrub directly to any position.
+- **Multi-location playback bypass** — Keeps SoundCloud playing even when you start playback in another browser tab or on another device (`"Paused because you started playing on another device."`). Can be toggled on or off from the popup (with an `OFF` badge on the extension icon when paused).
+- **Mini-player controls & seekable progress bar** — View the playing track's artwork, sliding marquee title (click to copy `"Artist - Title"`), artist, and elapsed/total time, scrub directly to any position, and switch between multiple SoundCloud tabs.
+- **Global & popup keyboard shortcuts** — Control Play/Pause, Next, Previous, and Like globally from any tab (customizable at `chrome://extensions/shortcuts`), plus full keyboard shortcuts inside the popup.
 - **Volume & mute control** — Adjust SoundCloud's volume slider (`0%–100%`) or mute/unmute from the popup.
 - **Like & Follow** — Like the playing track or follow its artist directly from the popup.
-- **Track downloader** — Download the currently playing track (`.m4a` AAC or `.mp3` when provided by SoundCloud) with a live progress bar that fades back to the default button when finished.
-- **Save & resume progress** — Automatically saves your playback position for the latest track, resets it when you play a new song or skip/finish it, and lets you resume from the popup.
+- **Track downloader** — Download the currently playing track (`.m4a` AAC or `.mp3` when provided by SoundCloud) with live progress, timeout/retry protection, and click-to-cancel support.
+- **Save & resume progress** — Automatically saves your playback position for the latest track, resets it when you play a new song, skip, or finish the track, and lets you resume from the popup.
+
+## Global Shortcuts
+
+| Default Key | Action |
+| --- | --- |
+| `Alt` + `Shift` + `P` | Play / Pause |
+| `Alt` + `Shift` + `N` | Next track |
+| `Alt` + `Shift` + `B` | Previous track |
+| `Alt` + `Shift` + `L` | Like / Unlike track |
 
 ## Keyboard Shortcuts (Popup)
 
@@ -42,6 +52,7 @@ A Manifest V3 Chrome extension that keeps SoundCloud playing across tabs and dev
 ```text
 soundcloud/
 ├── manifest.json          # Extension manifest (MV3)
+├── background.js          # MV3 service worker for global shortcuts and OFF badge
 ├── content-main.js        # MAIN-world hooks, player bridge, downloader, progress sync
 ├── content-bridge.js      # ISOLATED-world bridge for chrome.storage and popup messaging
 ├── icons/

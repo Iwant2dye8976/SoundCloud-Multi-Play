@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SoundCloud Multi-Play",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Allow SoundCloud to keep playing across tabs and devices, with mini-player controls, progress bar, and track downloader.",
   "permissions": [
     "storage",
@@ -10,6 +10,35 @@
   "host_permissions": [
     "*://*.soundcloud.com/*"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "commands": {
+    "toggle-play": {
+      "suggested_key": {
+        "default": "Alt+Shift+P"
+      },
+      "description": "Play or pause SoundCloud"
+    },
+    "next-track": {
+      "suggested_key": {
+        "default": "Alt+Shift+N"
+      },
+      "description": "Skip to next SoundCloud track"
+    },
+    "prev-track": {
+      "suggested_key": {
+        "default": "Alt+Shift+B"
+      },
+      "description": "Skip to previous SoundCloud track"
+    },
+    "like-track": {
+      "suggested_key": {
+        "default": "Alt+Shift+L"
+      },
+      "description": "Like or unlike current SoundCloud track"
+    }
+  },
   "icons": {
     "16": "icons/icon-16.png",
     "48": "icons/icon-48.png",

@@ -68,6 +68,8 @@ let selectedTabId = null;
 let lastTabsRenderKey = '';
 let lastRenderedTrackUrl = '';
 let lastRenderedTrackTitle = '';
+let refreshSeq = 0;
+const tabStatesById = new Map();
 let isDraggingSeek = false;
 let seekLockUntil = 0;
 let lastKeySeekAt = 0;
@@ -79,6 +81,7 @@ let dismissedDoneId = null;
 let fadeHoldTimer = null;
 let fadeSwapTimer = null;
 let copyResetTimer = null;
+let titleCopyResetTimer = null;
 
 function formatTime(totalSec) {
   const sec = Math.max(0, Math.floor(totalSec || 0));
@@ -119,7 +122,8 @@ function clearDownloadFadeTimers() {
 function resetDownloadButtonToIdle() {
   clearDownloadFadeTimers();
   btnDownload.disabled = false;
-  btnDownload.classList.remove('done', 'error', 'fading-out');
+  btnDownload.classList.remove('downloading', 'done', 'error', 'fading-out');
+  btnDownload.title = 'Download playing track (D)';
   downloadFillEl.style.width = '0%';
   downloadTextEl.textContent = 'Download track';
 }
@@ -152,9 +156,11 @@ function renderDownloadState(dl) {
     clearDownloadFadeTimers();
     activeDoneId = null;
     btnDownload.classList.remove('done', 'error', 'fading-out');
-    btnDownload.disabled = true;
+    btnDownload.classList.add('downloading');
+    btnDownload.disabled = false;
+    btnDownload.title = 'Click to cancel download';
     downloadFillEl.style.width = `${state.progress || 0}%`;
-    downloadTextEl.textContent = `Downloading ${state.progress || 0}%...`;
+    downloadTextEl.textContent = `Downloading ${state.progress || 0}% (Cancel)`;
   } else if (state.status === 'done') {
     const doneId = state.id || state.filename || 'done';
     if (dismissedDoneId === doneId) {
@@ -165,8 +171,9 @@ function renderDownloadState(dl) {
     }
     if (!btnDownload.classList.contains('fading-out')) {
       btnDownload.disabled = false;
-      btnDownload.classList.remove('error');
+      btnDownload.classList.remove('downloading', 'error');
       btnDownload.classList.add('done');
+      btnDownload.title = 'Download playing track (D)';
       downloadFillEl.style.width = '100%';
       downloadTextEl.textContent = state.filename ? `Saved ${state.filename}` : 'Downloaded';
       scheduleDownloadFadeOut(doneId);
@@ -174,9 +181,10 @@ function renderDownloadState(dl) {
   } else if (state.status === 'error') {
     clearDownloadFadeTimers();
     activeDoneId = null;
-    btnDownload.classList.remove('done', 'fading-out');
+    btnDownload.classList.remove('downloading', 'done', 'fading-out');
     btnDownload.disabled = false;
     btnDownload.classList.add('error');
+    btnDownload.title = 'Download playing track (D)';
     downloadFillEl.style.width = '0%';
     downloadTextEl.textContent = state.error || 'Download failed — retry';
   } else {
@@ -333,6 +341,21 @@ function normalizeTrackUrl(url) {
   }
 }
 
+function getTabChipMeta(tab, index) {
+  const tabState = tabStatesById.get(tab.id);
+  const isAudible = Boolean(tab.audible || tabState?.isPlaying);
+  const stateLabel = tabState?.hasTrack && tabState.title ? tabState.title : '';
+  const cleanPageTitle = (tab.title || '')
+    .replace(/\s*\|\s*Listen online.*$/i, '')
+    .replace(/^Stream\s+/i, '')
+    .trim();
+  const labelText = stateLabel || cleanPageTitle || `Tab ${index + 1}`;
+  const tooltipText = tabState?.hasTrack && tabState.title
+    ? (tabState.artist ? `${tabState.artist} — ${tabState.title}` : tabState.title)
+    : (tab.title || `SoundCloud Tab ${index + 1}`);
+  return { isAudible, labelText, tooltipText };
+}
+
 function renderTabsBar(tabs, currentTabId) {
   if (!tabs || tabs.length < 2) {
     if (lastTabsRenderKey !== '') {
@@ -343,19 +366,21 @@ function renderTabsBar(tabs, currentTabId) {
     return;
   }
 
+  const metas = tabs.map((tab, index) => getTabChipMeta(tab, index));
   const renderKey = `${currentTabId}|${tabs
-    .map((t) => `${t.id}:${t.audible ? 1 : 0}:${t.title || ''}`)
+    .map((t, i) => `${t.id}:${metas[i].isAudible ? 1 : 0}:${metas[i].labelText}`)
     .join('\u0001')}`;
   if (renderKey === lastTabsRenderKey) return;
   lastTabsRenderKey = renderKey;
 
   tabsBarEl.classList.remove('hidden');
   const nodes = tabs.map((tab, index) => {
+    const { isAudible, labelText, tooltipText } = metas[index];
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'tab-chip';
     if (tab.id === currentTabId) btn.classList.add('active');
-    if (tab.audible) btn.classList.add('audible');
+    if (isAudible) btn.classList.add('audible');
     btn.setAttribute('role', 'tab');
     btn.setAttribute('aria-selected', String(tab.id === currentTabId));
 
@@ -363,13 +388,17 @@ function renderTabsBar(tabs, currentTabId) {
     dot.className = 'tab-chip-dot';
     const label = document.createElement('span');
     label.className = 'tab-chip-text';
-    const cleanTitle = (tab.title || '').replace(/\s*\|\s*Listen online.*$/i, '').replace(/^Stream\s+/i, '').trim();
-    label.textContent = cleanTitle || `Tab ${index + 1}`;
-    btn.title = tab.title || `SoundCloud Tab ${index + 1}`;
+    label.textContent = labelText;
+    btn.title = tooltipText;
 
     btn.append(dot, label);
     btn.addEventListener('click', () => {
       selectedTabId = tab.id;
+      try {
+        chrome.storage?.session?.set?.({ selectedTabId: tab.id });
+      } catch {
+        // Ignore if session storage is unavailable
+      }
       resetCopyButton();
       refreshState();
     });
@@ -379,11 +408,12 @@ function renderTabsBar(tabs, currentTabId) {
   tabsBarEl.replaceChildren(...nodes);
 }
 
-async function findSoundCloudTab() {
+async function querySoundCloudTabs(shouldRender = true) {
   const tabs = await chrome.tabs.query({ url: '*://*.soundcloud.com/*' });
   if (!tabs || tabs.length === 0) {
+    tabStatesById.clear();
     renderTabsBar([], null);
-    return null;
+    return { tabs: [], chosen: null };
   }
 
   let chosen = null;
@@ -394,38 +424,105 @@ async function findSoundCloudTab() {
     chosen = tabs.find((t) => t.audible) || tabs.find((t) => t.active) || tabs[0];
   }
   selectedTabId = chosen.id;
-  renderTabsBar(tabs, chosen.id);
+  if (shouldRender) {
+    renderTabsBar(tabs, chosen.id);
+  }
+  return { tabs, chosen };
+}
+
+async function findSoundCloudTab() {
+  const { chosen } = await querySoundCloudTabs(true);
   return chosen;
 }
 
-async function sendToSoundCloudTab(message) {
-  const tab = await findSoundCloudTab();
-  if (!tab) {
+async function sendToSoundCloudTab(message, shouldRenderTabs = true) {
+  const { chosen } = await querySoundCloudTabs(shouldRenderTabs);
+  if (!chosen) {
     activeTabId = null;
     activeWindowId = null;
     return null;
   }
-  activeTabId = tab.id;
-  activeWindowId = tab.windowId;
+  activeTabId = chosen.id;
+  activeWindowId = chosen.windowId;
   try {
-    return await chrome.tabs.sendMessage(tab.id, message);
+    return await chrome.tabs.sendMessage(chosen.id, message);
   } catch {
     return null;
   }
 }
 
 async function refreshState() {
-  const [{ lastPlayed = null }, res] = await Promise.all([
+  const seq = ++refreshSeq;
+  const [{ lastPlayed = null }, { tabs, chosen }] = await Promise.all([
     chrome.storage.local.get('lastPlayed'),
-    sendToSoundCloudTab({ type: 'GET_PLAYER_STATE' })
+    querySoundCloudTabs(false)
   ]);
+  if (seq !== refreshSeq) return;
+
+  if (!chosen) {
+    activeTabId = null;
+    activeWindowId = null;
+    lastPlayedInfo = lastPlayed;
+    renderPlayerState(null);
+    return;
+  }
+
+  activeTabId = chosen.id;
+  activeWindowId = chosen.windowId;
+
+  const targetTabs = tabs.length >= 2 ? tabs : [chosen];
+  const responses = await Promise.all(
+    targetTabs.map(async (t) => {
+      try {
+        return await chrome.tabs.sendMessage(t.id, { type: 'GET_PLAYER_STATE' });
+      } catch {
+        return null;
+      }
+    })
+  );
+  if (seq !== refreshSeq) return;
+
+  const activeIds = new Set(tabs.map((t) => t.id));
+  for (const existingId of tabStatesById.keys()) {
+    if (!activeIds.has(existingId)) tabStatesById.delete(existingId);
+  }
+  targetTabs.forEach((t, idx) => {
+    tabStatesById.set(t.id, responses[idx]?.state || null);
+  });
+
+  renderTabsBar(tabs, chosen.id);
   lastPlayedInfo = lastPlayed;
-  renderPlayerState(res?.state || null);
+  renderPlayerState(tabStatesById.get(chosen.id) || null);
 }
 
 async function sendCommand(command, value) {
+  const seq = ++refreshSeq;
   const res = await sendToSoundCloudTab({ type: 'PLAYER_COMMAND', command, value });
-  if (res?.state) renderPlayerState(res.state);
+  if (seq === refreshSeq && res?.state) {
+    if (activeTabId !== null) tabStatesById.set(activeTabId, res.state);
+    renderPlayerState(res.state);
+  }
+}
+
+async function copyTrackTitle() {
+  const title = latestState?.title || '';
+  if (!title) return;
+  const artist = latestState?.artist || '';
+  const text = artist && !title.toLowerCase().includes(artist.toLowerCase())
+    ? `${artist} - ${title}`
+    : title;
+  try {
+    await navigator.clipboard.writeText(text);
+    clearTimeout(titleCopyResetTimer);
+    trackTitleEl.classList.add('copied');
+    trackTitleEl.title = 'Copied title!';
+    titleCopyResetTimer = setTimeout(() => {
+      trackTitleEl.classList.remove('copied');
+      trackTitleEl.title = latestState?.title || '';
+    }, 1200);
+  } catch {
+    // Ignore clipboard failure
+  }
 }
 
 function resetCopyButton() {
@@ -456,6 +553,11 @@ async function copySongLink() {
 }
 
 async function triggerDownload() {
+  if (btnDownload.classList.contains('downloading')) {
+    const res = await sendToSoundCloudTab({ type: 'CANCEL_DOWNLOAD' });
+    renderDownloadState(res?.downloadState || { status: 'idle' });
+    return;
+  }
   renderDownloadState({ status: 'downloading', progress: 2 });
   const res = await sendToSoundCloudTab({ type: 'DOWNLOAD_TRACK' });
   if (res?.downloadState) {
@@ -576,6 +678,7 @@ btnFollow.addEventListener('click', async () => {
   setTimeout(refreshState, 350);
 });
 btnCopy.addEventListener('click', copySongLink);
+trackTitleEl.addEventListener('click', copyTrackTitle);
 btnDownload.addEventListener('click', triggerDownload);
 
 progressRangeEl.addEventListener('input', () => {
@@ -700,15 +803,21 @@ document.addEventListener('keydown', (e) => {
     sendCommand('toggleRepeat');
   } else if (e.key === 'd' || e.key === 'D') {
     e.preventDefault();
-    triggerDownload();
+    if (!btnDownload.classList.contains('downloading')) {
+      triggerDownload();
+    }
   }
 });
+
+async function pollLoop() {
+  await refreshState();
+  setTimeout(pollLoop, 500);
+}
 
 async function init() {
   const { enabled = true } = await chrome.storage.local.get('enabled');
   updateToggleUI(enabled);
-  await refreshState();
-  setInterval(refreshState, 500);
+  await pollLoop();
 }
 
 init();

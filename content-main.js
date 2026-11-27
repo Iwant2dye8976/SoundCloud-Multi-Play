@@ -8,7 +8,9 @@
   let capturedClientId = '';
   let downloadSeq = 0;
   let downloadResetTimer = null;
+  let activeDownloadAbort = null;
   let downloadState = { status: 'idle', progress: 0, error: '', filename: '', id: 0 };
+  let lastObservedTrackUrl = '';
   let savedProgress = {};
   let savedProgressLoaded = false;
   let lastPlayed = null;
@@ -48,17 +50,25 @@
     if (typeof ms.setPositionState === 'function') {
       const origSetPositionState = ms.setPositionState.bind(ms);
       ms.setPositionState = function (state) {
+        const prevTrackUrl = mediaPositionState?.trackUrl || '';
         if (state && typeof state === 'object') {
           const trackHref = document.querySelector('.playbackSoundBadge__titleLink')?.href || '';
+          const nextTrackUrl = normalizeTrackUrl(trackHref);
           mediaPositionState = {
-            trackUrl: normalizeTrackUrl(trackHref),
+            trackUrl: nextTrackUrl,
             duration: Number(state.duration) || 0,
             position: Number(state.position) || 0,
             playbackRate: Number(state.playbackRate) || 1
           };
           mediaPositionUpdatedAt = Date.now();
+          if (nextTrackUrl && nextTrackUrl !== prevTrackUrl) {
+            queueMicrotask(checkTrackChangeForProgress);
+          }
         } else {
           mediaPositionState = null;
+          if (prevTrackUrl) {
+            queueMicrotask(checkTrackChangeForProgress);
+          }
         }
         return origSetPositionState(state);
       };
@@ -980,6 +990,42 @@
     }
   }
 
+  function checkTrackChangeForProgress() {
+    const titleHref = document.querySelector('.playbackSoundBadge__titleLink')?.href || '';
+    const nextNorm = normalizeTrackUrl(titleHref);
+    if (nextNorm === lastObservedTrackUrl) return;
+    lastObservedTrackUrl = nextNorm;
+    maybeRestoreProgress();
+    persistCurrentProgress();
+  }
+
+  let trackObserverScheduled = false;
+  if (typeof MutationObserver === 'function') {
+    const startTrackObserver = () => {
+      const root = document.querySelector('.playControls') || document.body || document.documentElement;
+      if (!root) return;
+      const observer = new MutationObserver(() => {
+        if (trackObserverScheduled) return;
+        trackObserverScheduled = true;
+        queueMicrotask(() => {
+          trackObserverScheduled = false;
+          checkTrackChangeForProgress();
+        });
+      });
+      observer.observe(root, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['href', 'class']
+      });
+    };
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', startTrackObserver, { once: true });
+    } else {
+      startTrackObserver();
+    }
+  }
+
   setInterval(() => {
     maybeRestoreProgress();
     const state = getPlayerState();
@@ -1065,8 +1111,37 @@
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   }
 
-  async function downloadProgressive(streamUrl, baseName) {
-    const res = await origFetch(streamUrl);
+  async function fetchWithTimeoutAndRetry(url, externalSignal, timeoutMs = 15000, retries = 1) {
+    let lastErr = null;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      if (externalSignal?.aborted) {
+        throw externalSignal.reason || new DOMException('Download cancelled', 'AbortError');
+      }
+      const ctrl = new AbortController();
+      const onExternalAbort = () => ctrl.abort(externalSignal.reason || new DOMException('Download cancelled', 'AbortError'));
+      externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
+      const timer = setTimeout(() => ctrl.abort(new Error('Request timed out')), timeoutMs);
+      try {
+        const res = await origFetch(url, { signal: ctrl.signal });
+        if (res.status >= 500 && attempt < retries) {
+          lastErr = new Error(`Server error (${res.status})`);
+          continue;
+        }
+        return res;
+      } catch (err) {
+        if (externalSignal?.aborted) throw err;
+        lastErr = err;
+        if (attempt >= retries) throw err;
+      } finally {
+        clearTimeout(timer);
+        externalSignal?.removeEventListener('abort', onExternalAbort);
+      }
+    }
+    throw lastErr || new Error('Request failed');
+  }
+
+  async function downloadProgressive(streamUrl, baseName, signal) {
+    const res = await fetchWithTimeoutAndRetry(streamUrl, signal, 30000, 1);
     if (!res.ok) throw new Error(`Stream download failed (${res.status})`);
 
     const contentLength = Number(res.headers.get('content-length')) || 0;
@@ -1081,6 +1156,10 @@
     const chunks = [];
     let received = 0;
     while (true) {
+      if (signal?.aborted) {
+        await reader.cancel().catch(() => {});
+        throw signal.reason || new DOMException('Download cancelled', 'AbortError');
+      }
       const { done, value } = await reader.read();
       if (done) break;
       chunks.push(value);
@@ -1093,8 +1172,8 @@
     return filename;
   }
 
-  async function downloadHLS(m3u8Url, mimeType, baseName) {
-    const m3u8Res = await origFetch(m3u8Url);
+  async function downloadHLS(m3u8Url, mimeType, baseName, signal) {
+    const m3u8Res = await fetchWithTimeoutAndRetry(m3u8Url, signal, 15000, 1);
     if (!m3u8Res.ok) throw new Error(`Playlist fetch failed (${m3u8Res.status})`);
     const m3u8Text = await m3u8Res.text();
 
@@ -1106,7 +1185,7 @@
     const buffers = new Array(total);
 
     const fetchPart = async (url, index) => {
-      const partRes = await origFetch(url);
+      const partRes = await fetchWithTimeoutAndRetry(url, signal, 15000, 1);
       if (!partRes.ok) throw new Error(`Segment fetch failed (${partRes.status})`);
       buffers[index] = await partRes.arrayBuffer();
       completed += 1;
@@ -1121,6 +1200,9 @@
 
     const CONCURRENCY = 4;
     for (let i = 0; i < segments.length; i += CONCURRENCY) {
+      if (signal?.aborted) {
+        throw signal.reason || new DOMException('Download cancelled', 'AbortError');
+      }
       const batch = segments
         .slice(i, i + CONCURRENCY)
         .map((segUrl, j) => fetchPart(segUrl, offset + i + j));
@@ -1137,20 +1219,33 @@
     return filename;
   }
 
+  function cancelTrackDownload() {
+    if (downloadState.status !== 'downloading') return { ...downloadState };
+    ++downloadSeq;
+    activeDownloadAbort?.abort(new DOMException('Download cancelled', 'AbortError'));
+    activeDownloadAbort = null;
+    downloadState = { status: 'idle', progress: 0, error: '', filename: '', id: downloadSeq };
+    return { ...downloadState };
+  }
+
   async function startTrackDownload() {
     if (downloadState.status === 'downloading') return { ...downloadState };
 
     clearTimeout(downloadResetTimer);
     const seq = ++downloadSeq;
+    const controller = new AbortController();
+    activeDownloadAbort = controller;
 
     const state = getPlayerState();
     if (!state.hasTrack || !state.trackUrl) {
+      activeDownloadAbort = null;
       downloadState = { status: 'error', progress: 0, error: 'No track is currently playing', filename: '', id: seq };
       return { ...downloadState };
     }
 
     const clientId = findClientId();
     if (!clientId) {
+      activeDownloadAbort = null;
       downloadState = { status: 'error', progress: 0, error: 'Missing SoundCloud client_id — play a track first', filename: '', id: seq };
       return { ...downloadState };
     }
@@ -1160,7 +1255,7 @@
     try {
       const cleanUrl = state.trackUrl.split('?')[0];
       const resolveUrl = `https://api-v2.soundcloud.com/resolve?url=${encodeURIComponent(cleanUrl)}&client_id=${encodeURIComponent(clientId)}`;
-      const trackRes = await origFetch(resolveUrl);
+      const trackRes = await fetchWithTimeoutAndRetry(resolveUrl, controller.signal, 15000, 1);
       if (!trackRes.ok) throw new Error(`Failed to resolve track (${trackRes.status})`);
       const track = await trackRes.json();
 
@@ -1178,7 +1273,7 @@
           streamMetaUrl.searchParams.set('track_authorization', track.track_authorization);
         }
 
-        const streamRes = await origFetch(streamMetaUrl.href);
+        const streamRes = await fetchWithTimeoutAndRetry(streamMetaUrl.href, controller.signal, 15000, 0);
         if (!streamRes.ok) {
           lastStatus = streamRes.status;
           continue;
@@ -1202,11 +1297,12 @@
 
       let filename;
       if (chosenTranscoding.format?.protocol === 'progressive') {
-        filename = await downloadProgressive(streamData.url, baseName);
+        filename = await downloadProgressive(streamData.url, baseName, controller.signal);
       } else {
-        filename = await downloadHLS(streamData.url, chosenTranscoding.format?.mime_type || '', baseName);
+        filename = await downloadHLS(streamData.url, chosenTranscoding.format?.mime_type || '', baseName, controller.signal);
       }
 
+      if (seq !== downloadSeq) return { ...downloadState };
       downloadState = { status: 'done', progress: 100, error: '', filename, id: seq };
       downloadResetTimer = setTimeout(() => {
         if (downloadState.id === seq && downloadState.status === 'done') {
@@ -1214,13 +1310,24 @@
         }
       }, 3000);
     } catch (err) {
-      downloadState = {
-        status: 'error',
-        progress: 0,
-        error: err?.message || 'Download failed',
-        filename: '',
-        id: seq
-      };
+      if (controller.signal.aborted && seq !== downloadSeq) {
+        return { ...downloadState };
+      }
+      const isTimeout = err?.message === 'Request timed out';
+      const isCancelled = err?.name === 'AbortError' && !isTimeout;
+      downloadState = isCancelled
+        ? { status: 'idle', progress: 0, error: '', filename: '', id: seq }
+        : {
+            status: 'error',
+            progress: 0,
+            error: err?.message || 'Download failed',
+            filename: '',
+            id: seq
+          };
+    } finally {
+      if (activeDownloadAbort === controller) {
+        activeDownloadAbort = null;
+      }
     }
 
     return { ...downloadState };
@@ -1321,6 +1428,15 @@
           '*'
         );
       })();
+      return;
+    }
+
+    if (type === 'CANCEL_DOWNLOAD') {
+      const payload = cancelTrackDownload();
+      window.postMessage(
+        { source: MSG_SOURCE, type: 'RESPONSE', requestId, payload },
+        '*'
+      );
     }
   });
 
