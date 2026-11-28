@@ -899,7 +899,7 @@ test('popup focuses tab window, avoids redundant tabsBar rebuilds, resets copy e
   });
   elementsById['lan-copy-setup-btn'].click();
   await new Promise((r) => setTimeout(r, 5));
-  assert.ok(copiedTexts[0].includes('powershell -NoProfile -ExecutionPolicy Bypass -File'));
+  assert.ok(copiedTexts[0].includes('node -e '));
   assert.ok(copiedTexts[0].includes('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'));
   assert.ok(copiedTexts[0].includes('install-native-host.ps1'));
 });

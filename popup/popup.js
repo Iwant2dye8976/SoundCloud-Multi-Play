@@ -934,8 +934,19 @@ lanToggleEl?.addEventListener('change', async () => {
 });
 
 function buildInstallSetupCommand(extId) {
-  const idArg = extId ? ` -ExtensionId ${extId}` : '';
-  return `powershell -NoProfile -ExecutionPolicy Bypass -File "lan-server\\install-native-host.ps1"${idArg}`;
+  if (!extId) {
+    return 'powershell -NoProfile -ExecutionPolicy Bypass -File "C:\\soundcloud\\lan-server\\install-native-host.ps1"';
+  }
+  const script = [
+    `const fs=require('fs'),path=require('path'),{execFileSync}=require('child_process');`,
+    `const id='${extId}',la=process.env.LOCALAPPDATA||'';`,
+    `const bases=[path.join(la,'Google/Chrome/User Data'),path.join(la,'Microsoft/Edge/User Data'),path.join(la,'BraveSoftware/Brave-Browser/User Data')];`,
+    `let dir='';`,
+    `for(const b of bases){if(dir||!fs.existsSync(b))continue;for(const p of fs.readdirSync(b)){for(const f of ['Secure Preferences','Preferences']){try{const j=JSON.parse(fs.readFileSync(path.join(b,p,f),'utf8'));const x=j?.extensions?.settings?.[id]?.path;if(x){dir=x;break;}}catch{}}if(dir)break;}}`,
+    `if(!dir)dir='C:/soundcloud';`,
+    `execFileSync('powershell',['-NoProfile','-ExecutionPolicy','Bypass','-File',path.join(dir,'lan-server/install-native-host.ps1'),'-ExtensionId',id],{stdio:'inherit'});`
+  ].join('');
+  return `node -e "${script}"`;
 }
 
 lanCopySetupBtn?.addEventListener('click', async () => {
