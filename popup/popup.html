@@ -225,8 +225,51 @@
         </div>
       </div>
     </section>
+
+    <section class="lan-card" id="lan-card">
+      <div class="lan-header">
+        <div class="lan-title-wrap">
+          <span class="lan-dot" id="lan-dot"></span>
+          <div class="lan-title-group">
+            <span class="lan-title">LAN Mobile Remote</span>
+            <span class="lan-status" id="lan-status">Off</span>
+          </div>
+        </div>
+        <label class="switch switch-sm" aria-label="Toggle LAN Mobile Remote">
+          <input type="checkbox" id="lan-toggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="lan-body hidden" id="lan-body">
+        <div class="lan-pairing hidden" id="lan-pairing">
+          <div class="lan-qr-wrap">
+            <svg class="lan-qr-svg" id="lan-qr-svg" width="92" height="92" role="img" aria-label="QR code for mobile remote"></svg>
+          </div>
+          <div class="lan-meta">
+            <div class="lan-pin-row">
+              <span class="lan-pin-label">PIN</span>
+              <span class="lan-pin-value" id="lan-pin">—</span>
+            </div>
+            <button type="button" class="lan-url-btn" id="lan-url-btn" title="Copy mobile URL">
+              <span id="lan-url-text">—</span>
+            </button>
+            <span class="lan-hint">Scan QR or open URL on phone</span>
+          </div>
+        </div>
+
+        <div class="lan-offline hidden" id="lan-offline">
+          <p class="lan-offline-text" id="lan-offline-text">Run <code>node lan-server/server.js</code> or install auto-start.</p>
+          <div class="lan-offline-actions">
+            <button type="button" class="btn-secondary lan-copy-setup-btn" id="lan-copy-setup-btn">Copy setup</button>
+            <button type="button" class="btn-secondary lan-retry-btn" id="lan-retry-btn">Retry</button>
+          </div>
+        </div>
+      </div>
+    </section>
   </main>
 
+  <script src="qr.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

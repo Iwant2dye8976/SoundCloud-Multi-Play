@@ -1,0 +1,9 @@
+{
+    "name":  "com.soundcloud.multiplay.lan",
+    "description":  "SoundCloud Multi-Play LAN Remote Companion Server",
+    "path":  "C:\\soundcloud\\lan-server\\native-host.cmd",
+    "type":  "stdio",
+    "allowed_origins":  [
+                            "chrome-extension://pcdafnnffkihpkblmpamfkkepkcbmdlg/"
+                        ]
+}

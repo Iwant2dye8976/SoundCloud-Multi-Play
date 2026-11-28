@@ -841,3 +841,194 @@ kbd {
   font-size: 9.5px;
   line-height: 1.3;
 }
+
+/* LAN Mobile Remote */
+.lan-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.lan-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.lan-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.lan-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--subtle);
+  flex-shrink: 0;
+}
+
+.lan-card.connected .lan-dot {
+  background: var(--ok);
+}
+
+.lan-card.offline .lan-dot {
+  background: #f59e0b;
+}
+
+.lan-title-group {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.lan-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.lan-status {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.switch-sm {
+  width: 34px;
+  height: 19px;
+}
+
+.switch-sm .slider::before {
+  height: 13px;
+  width: 13px;
+}
+
+.switch-sm input:checked + .slider::before {
+  transform: translateX(15px);
+}
+
+.lan-body {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.lan-pairing {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.lan-qr-wrap {
+  width: 92px;
+  height: 92px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+  flex-shrink: 0;
+}
+
+.lan-qr-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.lan-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.lan-pin-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lan-pin-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.lan-pin-value {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: #ffffff;
+  font-variant-numeric: tabular-nums;
+}
+
+.lan-url-btn {
+  width: 100%;
+  text-align: left;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-raised);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lan-url-btn:hover {
+  border-color: var(--accent);
+}
+
+.lan-url-btn.copied {
+  border-color: rgba(34, 197, 94, 0.5);
+  color: #86efac;
+}
+
+.lan-hint {
+  font-size: 10.5px;
+  color: var(--subtle);
+}
+
+.lan-offline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lan-offline-text {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.lan-offline-text code {
+  color: #ffffff;
+  background: var(--surface-raised);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+.lan-offline-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lan-copy-setup-btn,
+.lan-retry-btn {
+  padding: 5px 10px;
+  font-size: 11px;
+  flex-shrink: 0;
+}

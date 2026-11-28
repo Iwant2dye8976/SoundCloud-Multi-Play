@@ -1,11 +1,13 @@
 {
   "manifest_version": 3,
   "name": "SoundCloud Multi-Play",
-  "version": "1.3.0",
-  "description": "Allow SoundCloud to keep playing across tabs and devices, with mini-player controls, progress bar, and track downloader.",
+  "version": "1.6.0",
+  "description": "Allow SoundCloud to keep playing across tabs and devices, with mini-player controls, progress bar, track downloader, and LAN mobile remote.",
   "permissions": [
     "storage",
-    "tabs"
+    "tabs",
+    "alarms",
+    "nativeMessaging"
   ],
   "host_permissions": [
     "*://*.soundcloud.com/*"

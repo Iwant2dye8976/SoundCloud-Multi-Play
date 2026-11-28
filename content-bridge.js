@@ -88,7 +88,7 @@
           const { savedProgress = {}, lastPlayed: storedLastPlayed = null } =
             await chrome.storage.local.get(['savedProgress', 'lastPlayed']);
           let nextProgress = { ...savedProgress };
-          let nextLastPlayed = lastPlayed !== undefined ? lastPlayed : storedLastPlayed;
+          let nextLastPlayed = storedLastPlayed;
 
           if (clearAll) {
             nextProgress = {};
@@ -102,6 +102,9 @@
             } else if (entry) {
               // Keep only the single latest played song
               nextProgress = { [trackUrl]: entry };
+              if (lastPlayed !== undefined) {
+                nextLastPlayed = lastPlayed;
+              }
             }
           }
 
@@ -160,7 +163,8 @@
         const state = await requestMainWorld('PLAY_ON_PAGE', {
           targetUrl: message.targetUrl || '',
           timeSec: message.timeSec,
-          requestedAt: message.requestedAt
+          requestedAt: message.requestedAt,
+          allowHidden: Boolean(message.allowHidden)
         });
         sendResponse({ ok: true, state });
       } else {

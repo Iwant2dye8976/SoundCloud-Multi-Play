@@ -62,12 +62,31 @@ const btnDownload = document.getElementById('btn-download');
 const downloadFillEl = document.getElementById('download-fill');
 const downloadTextEl = document.getElementById('download-text');
 
+const lanCardEl = document.getElementById('lan-card');
+const lanStatusEl = document.getElementById('lan-status');
+const lanToggleEl = document.getElementById('lan-toggle');
+const lanBodyEl = document.getElementById('lan-body');
+const lanPairingEl = document.getElementById('lan-pairing');
+const lanQrSvgEl = document.getElementById('lan-qr-svg');
+const lanPinEl = document.getElementById('lan-pin');
+const lanUrlBtn = document.getElementById('lan-url-btn');
+const lanUrlTextEl = document.getElementById('lan-url-text');
+const lanOfflineEl = document.getElementById('lan-offline');
+const lanOfflineTextEl = document.getElementById('lan-offline-text');
+const lanCopySetupBtn = document.getElementById('lan-copy-setup-btn');
+const lanRetryBtn = document.getElementById('lan-retry-btn');
+
 let activeTabId = null;
 let activeWindowId = null;
 let selectedTabId = null;
 let lastTabsRenderKey = '';
 let lastRenderedTrackUrl = '';
 let lastRenderedTrackTitle = '';
+let lastLanQrUrl = '';
+let lanUrlCopyTimer = null;
+let lanSetupCopyTimer = null;
+let latestLanUrl = '';
+let latestExtId = '';
 let refreshSeq = 0;
 const tabStatesById = new Map();
 let isDraggingSeek = false;
@@ -810,13 +829,159 @@ document.addEventListener('keydown', (e) => {
 });
 
 async function pollLoop() {
-  await refreshState();
+  await Promise.all([refreshState(), refreshLanStatus()]);
   setTimeout(pollLoop, 500);
 }
 
+async function fetchLocalServerInfo(port = 3847) {
+  if (typeof fetch !== 'function') return null;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/info`, { cache: 'no-store' });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+function renderLanState({ lanEnabled, connected, mobileCount, serverInfo, nativeError, extensionId }) {
+  if (!lanCardEl || !lanToggleEl) return;
+  if (extensionId) latestExtId = extensionId;
+  lanToggleEl.checked = Boolean(lanEnabled);
+  lanCardEl.classList.toggle('connected', Boolean(lanEnabled && connected));
+  lanCardEl.classList.toggle('offline', Boolean(lanEnabled && !connected));
+
+  if (!lanEnabled) {
+    lanStatusEl.textContent = 'Off';
+    lanBodyEl.classList.add('hidden');
+    lanPairingEl.classList.add('hidden');
+    lanOfflineEl.classList.add('hidden');
+    return;
+  }
+
+  lanBodyEl.classList.remove('hidden');
+
+  if (serverInfo && serverInfo.url) {
+    lanStatusEl.textContent = mobileCount > 0
+      ? `${mobileCount} connected`
+      : (connected ? 'Ready' : 'Server detected');
+    lanPairingEl.classList.remove('hidden');
+    lanOfflineEl.classList.add('hidden');
+    lanPinEl.textContent = serverInfo.pin || '—';
+    latestLanUrl = serverInfo.shortUrl || serverInfo.url;
+    if (!lanUrlBtn.classList.contains('copied')) {
+      lanUrlTextEl.textContent = latestLanUrl;
+    }
+    if (lastLanQrUrl !== serverInfo.url) {
+      lastLanQrUrl = serverInfo.url;
+      try {
+        globalThis.scQr?.renderQrSvg?.(lanQrSvgEl, serverInfo.url);
+      } catch {
+        // Ignore QR render errors
+      }
+    }
+  } else {
+    lanStatusEl.textContent = 'Server offline';
+    lanPairingEl.classList.add('hidden');
+    lanOfflineEl.classList.remove('hidden');
+    if (lanOfflineTextEl) {
+      lanOfflineTextEl.textContent = nativeError
+        ? 'Auto-start not installed. Copy & run the one-time setup command in PowerShell, or run node lan-server/server.js.'
+        : 'Starting LAN server... or run node lan-server/server.js manually.';
+    }
+    lastLanQrUrl = '';
+  }
+}
+
+async function refreshLanStatus() {
+  if (!lanToggleEl) return;
+  try {
+    const { lanEnabled = false, lanPort = 3847 } = await chrome.storage.local.get(['lanEnabled', 'lanPort']);
+    if (!lanEnabled) {
+      renderLanState({ lanEnabled: false, connected: false, mobileCount: 0, serverInfo: null });
+      return;
+    }
+
+    let status = null;
+    try {
+      status = await chrome.runtime?.sendMessage?.({ type: 'LAN_GET_STATUS' });
+    } catch {
+      status = null;
+    }
+
+    let serverInfo = status?.serverInfo || null;
+    if (!serverInfo) {
+      serverInfo = await fetchLocalServerInfo(lanPort);
+    }
+
+    renderLanState({
+      lanEnabled: true,
+      connected: Boolean(status?.connected || serverInfo?.extConnected),
+      mobileCount: Number(status?.mobileCount ?? serverInfo?.mobileCount ?? 0),
+      serverInfo,
+      nativeError: status?.nativeError || '',
+      extensionId: status?.extensionId || chrome.runtime?.id || ''
+    });
+  } catch {
+    // Ignore transient storage/runtime errors
+  }
+}
+
+lanToggleEl?.addEventListener('change', async () => {
+  const lanEnabled = lanToggleEl.checked;
+  await chrome.storage.local.set({ lanEnabled });
+  await refreshLanStatus();
+});
+
+function buildInstallSetupCommand(extId) {
+  const idArg = extId ? ` -ExtensionId ${extId}` : '';
+  return `powershell -NoProfile -ExecutionPolicy Bypass -File "lan-server\\install-native-host.ps1"${idArg}`;
+}
+
+lanCopySetupBtn?.addEventListener('click', async () => {
+  const extId = latestExtId || chrome.runtime?.id || '';
+  const cmd = buildInstallSetupCommand(extId);
+  try {
+    await navigator.clipboard.writeText(cmd);
+    clearTimeout(lanSetupCopyTimer);
+    lanCopySetupBtn.textContent = 'Copied!';
+    lanSetupCopyTimer = setTimeout(() => {
+      lanCopySetupBtn.textContent = 'Copy setup';
+    }, 1500);
+  } catch {
+    // Ignore clipboard failure
+  }
+});
+
+lanRetryBtn?.addEventListener('click', async () => {
+  try {
+    await chrome.runtime?.sendMessage?.({ type: 'LAN_RECONNECT' });
+  } catch {
+    // Ignore
+  }
+  await refreshLanStatus();
+});
+
+lanUrlBtn?.addEventListener('click', async () => {
+  if (!latestLanUrl) return;
+  try {
+    await navigator.clipboard.writeText(latestLanUrl);
+    clearTimeout(lanUrlCopyTimer);
+    lanUrlBtn.classList.add('copied');
+    lanUrlTextEl.textContent = 'Copied URL!';
+    lanUrlCopyTimer = setTimeout(() => {
+      lanUrlBtn.classList.remove('copied');
+      lanUrlTextEl.textContent = latestLanUrl;
+    }, 1500);
+  } catch {
+    // Ignore clipboard failure
+  }
+});
+
 async function init() {
-  const { enabled = true } = await chrome.storage.local.get('enabled');
+  const { enabled = true, lanEnabled = false } = await chrome.storage.local.get(['enabled', 'lanEnabled']);
   updateToggleUI(enabled);
+  if (lanToggleEl) lanToggleEl.checked = Boolean(lanEnabled);
   await pollLoop();
 }
 

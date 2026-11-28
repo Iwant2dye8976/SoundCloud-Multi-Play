@@ -157,6 +157,7 @@ function loadContentMainHarness() {
     attrs: { 'aria-valuenow': '42', 'aria-valuemax': '300' },
     rect: { left: 0, top: 0, width: 1000, height: 10 }
   });
+  const durationEl = createFakeElement('span', { textContent: '5:00' });
   const wrapperEvents = [];
   const origDispatch = progressWrap.dispatchEvent;
   progressWrap.dispatchEvent = (evt) => {
@@ -169,7 +170,8 @@ function loadContentMainHarness() {
     '.skipControl__next': nextEl,
     '.playbackSoundBadge__titleLink': titleEl,
     '.playbackSoundBadge__lightLink': artistEl,
-    '.playbackTimeline__progressWrapper': progressWrap
+    '.playbackTimeline__progressWrapper': progressWrap,
+    '.playbackTimeline__duration span:last-child': durationEl
   };
 
   const registeredHandlers = {};
@@ -260,6 +262,7 @@ function loadContentMainHarness() {
     titleEl,
     titleSpan,
     progressWrap,
+    durationEl,
     wrapperEvents,
     postedMessages,
     registeredHandlers,
@@ -680,7 +683,20 @@ test('popup focuses tab window, avoids redundant tabsBar rebuilds, resets copy e
     'copy-text': createFakeElement('span', { textContent: 'Copy link' }),
     'btn-download': createFakeElement('button'),
     'download-fill': createFakeElement('div'),
-    'download-text': createFakeElement('span', { textContent: 'Download track' })
+    'download-text': createFakeElement('span', { textContent: 'Download track' }),
+    'lan-card': createFakeElement('section'),
+    'lan-status': createFakeElement('span'),
+    'lan-toggle': createFakeElement('input', { id: 'lan-toggle', type: 'checkbox' }),
+    'lan-body': createFakeElement('div'),
+    'lan-pairing': createFakeElement('div'),
+    'lan-qr-svg': createFakeElement('svg'),
+    'lan-pin': createFakeElement('span'),
+    'lan-url-btn': createFakeElement('button'),
+    'lan-url-text': createFakeElement('span'),
+    'lan-offline': createFakeElement('div'),
+    'lan-offline-text': createFakeElement('p'),
+    'lan-copy-setup-btn': createFakeElement('button'),
+    'lan-retry-btn': createFakeElement('button')
   };
 
   let mockState = {
@@ -869,4 +885,351 @@ test('popup focuses tab window, avoids redundant tabsBar rebuilds, resets copy e
   await new Promise((r) => setTimeout(r, 5));
   assert.ok(sentMessages.some(([, m]) => m.type === 'CANCEL_DOWNLOAD'));
   assert.equal(elementsById['btn-download'].classList.contains('downloading'), false);
+
+  // Copy setup button generates a path-independent PowerShell command
+  copiedTexts.length = 0;
+  shouldRejectClipboard = false;
+  popupContext.renderLanState({
+    lanEnabled: true,
+    connected: false,
+    mobileCount: 0,
+    serverInfo: null,
+    nativeError: 'Specified native messaging host not found.',
+    extensionId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  });
+  elementsById['lan-copy-setup-btn'].click();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.ok(copiedTexts[0].includes('powershell -NoProfile -ExecutionPolicy Bypass -File'));
+  assert.ok(copiedTexts[0].includes('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'));
+  assert.ok(copiedTexts[0].includes('install-native-host.ps1'));
+});
+
+test('content-main preserves saved progress across long pauses, stale media position, remaining-time UI, and idle resets', () => {
+  const h = loadContentMainHarness();
+  h.sendBridgeMessage({ type: 'SET_SAVED_PROGRESS', savedProgress: {}, lastPlayed: null });
+
+  // Play Track A to 90s / 240s so savedProgress and restoredTracks are populated
+  h.titleEl.setAttribute('href', 'https://soundcloud.com/artist/track-a');
+  h.titleSpan.textContent = 'Track A';
+  h.progressWrap.setAttribute('aria-valuenow', '90');
+  h.progressWrap.setAttribute('aria-valuemax', '240');
+  h.winObj.navigator.mediaSession.setPositionState({ duration: 240, position: 90, playbackRate: 1 });
+  h.timers.runIntervals();
+
+  let saveMsg = h.postedMessages.find((m) => m.type === 'SAVE_PROGRESS');
+  assert.ok(saveMsg);
+  assert.equal(saveMsg.entry.timeSec, 90);
+
+  // Pause Track A (playbackRate: 0) and simulate leaving it idle for 2 hours
+  h.playEl.classList.remove('playing');
+  h.winObj.navigator.mediaSession.setPositionState({ duration: 240, position: 90, playbackRate: 0 });
+  const vmDate = vm.runInContext('Date', h.winObj);
+  const realDateNow = vmDate.now;
+  let fakeNow = realDateNow();
+  vmDate.now = () => fakeNow;
+  try {
+    fakeNow += 2 * 60 * 60 * 1000;
+
+    // Even if aria-valuenow is missing/empty and hidden fires, stale mediaPositionState must not extrapolate to end
+    h.progressWrap.setAttribute('aria-valuenow', '');
+    h.postedMessages.length = 0;
+    for (const fn of h.documentListeners.get('visibilitychange') || []) {
+      h.winObj.document.visibilityState = 'hidden';
+      fn({});
+    }
+    assert.equal(h.postedMessages.find((m) => m.type === 'SAVE_PROGRESS' && m.remove), undefined);
+
+    // If paused track drops to 0:00 while idle and user later presses Play, restore seeks back to 90s
+    h.progressWrap.setAttribute('aria-valuenow', '0');
+    h.winObj.document.visibilityState = 'visible';
+    h.timers.runIntervals(); // sees paused at 0s, allows re-restore
+    h.playEl.classList.add('playing');
+    h.wrapperEvents.length = 0;
+    h.timers.runIntervals();
+    h.timers.flushTimeouts(350);
+    assert.equal(h.wrapperEvents[0]?.type, 'mousedown');
+    // 90 / 240 * 1000 = 375
+    assert.equal(h.wrapperEvents[0]?.clientX, 375);
+
+    // Manual prev click keeps track at 0:00 instead of bouncing back to 90s
+    h.progressWrap.setAttribute('aria-valuenow', '1');
+    h.sendBridgeMessage({ type: 'PLAYER_COMMAND', command: 'prev', requestId: 50 });
+    h.wrapperEvents.length = 0;
+    h.timers.runIntervals();
+    h.timers.flushTimeouts(350);
+    assert.equal(h.wrapperEvents.length, 0);
+
+    // Remaining-time display (e.g. "-1:10") without aria-valuemax or mediaPositionState does not trigger end-of-track reset
+    h.winObj.navigator.mediaSession.setPositionState(null);
+    h.progressWrap.setAttribute('aria-valuemax', '');
+    h.durationEl.textContent = '-1:10';
+    h.progressWrap.setAttribute('aria-valuenow', '90');
+    h.playEl.classList.remove('playing');
+    h.postedMessages.length = 0;
+    for (const fn of h.documentListeners.get('visibilitychange') || []) {
+      h.winObj.document.visibilityState = 'hidden';
+      fn({});
+    }
+    assert.equal(h.postedMessages.find((m) => m.type === 'SAVE_PROGRESS' && m.remove), undefined);
+  } finally {
+    vmDate.now = realDateNow;
+  }
+});
+
+test('content-bridge removal of a stale track does not clear lastPlayed for a newer track', async () => {
+  const storage = {
+    enabled: true,
+    savedProgress: { 'https://soundcloud.com/a/active': { timeSec: 55, updatedAt: 200 } },
+    lastPlayed: { trackUrl: 'https://soundcloud.com/a/active', timeSec: 55, updatedAt: 200 }
+  };
+  const windowListeners = new Map();
+  const timers = createTimerHarness();
+  const winObj = {
+    navigator: {},
+    chrome: {
+      runtime: { id: 'ext-id', onMessage: { addListener() {} } },
+      storage: {
+        local: {
+          async get(keys) {
+            if (typeof keys === 'string') return { [keys]: storage[keys] };
+            const out = {};
+            for (const k of keys) out[k] = storage[k];
+            return out;
+          },
+          async set(patch) {
+            Object.assign(storage, patch);
+          },
+          async remove(key) {
+            delete storage[key];
+          }
+        },
+        onChanged: { addListener() {} }
+      }
+    },
+    addEventListener(type, fn) {
+      if (!windowListeners.has(type)) windowListeners.set(type, new Set());
+      windowListeners.get(type).add(fn);
+    },
+    postMessage() {},
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout
+  };
+  vm.createContext(winObj);
+  winObj.window = vm.runInContext('this', winObj);
+  vm.runInContext(CONTENT_BRIDGE_SRC, winObj);
+  await new Promise((r) => setTimeout(r, 15));
+
+  const evt = {
+    source: winObj.window,
+    data: {
+      source: 'sc-multiplay',
+      type: 'SAVE_PROGRESS',
+      trackUrl: 'https://soundcloud.com/a/old',
+      remove: true,
+      entry: null,
+      lastPlayed: null
+    }
+  };
+  for (const fn of windowListeners.get('message') || []) fn(evt);
+  await new Promise((r) => setTimeout(r, 20));
+
+  assert.equal(storage.lastPlayed.trackUrl, 'https://soundcloud.com/a/active');
+  assert.equal(storage.savedProgress['https://soundcloud.com/a/active'].timeSec, 55);
+});
+
+test('popup/qr generates valid QR matrix with finder patterns for LAN pairing URL', () => {
+  const qrSrc = fs.readFileSync(path.join(ROOT, 'popup', 'qr.js'), 'utf8');
+  const ctx = {
+    TextEncoder,
+    Uint8Array,
+    globalThis: null
+  };
+  ctx.globalThis = ctx;
+  vm.runInNewContext(qrSrc, ctx);
+
+  const matrix = ctx.scQr.createQrMatrix('http://192.168.1.42:3847/?pin=123456');
+  assert.ok(Array.isArray(matrix));
+  const size = matrix.length;
+  assert.ok(size >= 29 && size <= 37);
+  // Top-left finder pattern center (3,3) and border (0,0) must be dark (1)
+  assert.equal(matrix[0][0], 1);
+  assert.equal(matrix[3][3], 1);
+  assert.equal(matrix[1][1], 0);
+  // Top-right and bottom-left finder centers
+  assert.equal(matrix[3][size - 4], 1);
+  assert.equal(matrix[size - 4][3], 1);
+});
+
+test('background LAN bridge connects, relays commands, and responds to LAN_GET_STATUS', async () => {
+  const storageLocal = {
+    enabled: true,
+    lanEnabled: true,
+    lanPort: 3999,
+    savedProgress: { 'https://soundcloud.com/a/old': { timeSec: 45, updatedAt: 100 } },
+    lastPlayed: { trackUrl: 'https://soundcloud.com/a/old', timeSec: 45, durationSec: 180 }
+  };
+  const sentToTabs = [];
+  const createdAlarms = [];
+  const wsSent = [];
+  const wsListeners = new Map();
+  const nativeHostsConnected = [];
+  let nativeMsgListener = null;
+  let messageListener = null;
+
+  class FakeWebSocket {
+    constructor(url) {
+      this.url = url;
+      this.readyState = 1;
+    }
+    addEventListener(type, fn) {
+      if (!wsListeners.has(type)) wsListeners.set(type, new Set());
+      wsListeners.get(type).add(fn);
+    }
+    send(data) {
+      wsSent.push(JSON.parse(data));
+    }
+    close() {
+      this.readyState = 3;
+    }
+  }
+
+  const bgContext = {
+    URL,
+    WebSocket: FakeWebSocket,
+    setTimeout,
+    clearTimeout,
+    setInterval: () => 1,
+    clearInterval: () => {},
+    chrome: {
+      storage: {
+        local: {
+          async get(keys) {
+            if (typeof keys === 'string') return { [keys]: storageLocal[keys] };
+            if (Array.isArray(keys)) {
+              const out = {};
+              for (const k of keys) out[k] = storageLocal[k];
+              return out;
+            }
+            return { ...storageLocal };
+          },
+          async set(patch) {
+            Object.assign(storageLocal, patch);
+          }
+        },
+        session: {
+          async get() { return { selectedTabId: 301 }; },
+          async set() {}
+        },
+        onChanged: { addListener() {} }
+      },
+      action: {
+        async setBadgeBackgroundColor() {},
+        async setBadgeText() {}
+      },
+      alarms: {
+        create(name, opts) { createdAlarms.push([name, opts]); },
+        clear() {},
+        onAlarm: { addListener() {} }
+      },
+      tabs: {
+        async query() {
+          return [{ id: 301, audible: true, active: true, url: 'https://soundcloud.com/discover', title: 'Track X' }];
+        },
+        async sendMessage(tabId, msg) {
+          sentToTabs.push([tabId, msg]);
+          return { ok: true, state: { hasTrack: true, isPlaying: true, title: 'Track X' } };
+        },
+        async update() {}
+      },
+      runtime: {
+        id: 'ext-test-id',
+        connectNative(name) {
+          nativeHostsConnected.push(name);
+          return {
+            onMessage: { addListener(fn) { nativeMsgListener = fn; } },
+            onDisconnect: { addListener() {} },
+            postMessage() {},
+            disconnect() {}
+          };
+        },
+        onInstalled: { addListener() {} },
+        onStartup: { addListener() {} },
+        onMessage: {
+          addListener(fn) { messageListener = fn; }
+        }
+      },
+      commands: {
+        onCommand: { addListener() {} }
+      }
+    }
+  };
+
+  vm.runInNewContext(BACKGROUND_SRC, bgContext);
+  await new Promise((r) => setTimeout(r, 15));
+
+  assert.equal(createdAlarms[0]?.[0], 'lan-keepalive');
+  assert.deepEqual(nativeHostsConnected, ['com.soundcloud.multiplay.lan']);
+  nativeMsgListener({ type: 'NATIVE_READY', alreadyRunning: false, lanIp: '192.168.1.5', port: 3999, pin: '654321', url: 'http://192.168.1.5:3999/?pin=654321', shortUrl: 'http://192.168.1.5:3999' });
+
+  // Simulate SERVER_INFO and PLAYER_COMMAND from companion server
+  for (const fn of wsListeners.get('message') || []) {
+    fn({ data: JSON.stringify({ type: 'SERVER_INFO', lanIp: '192.168.1.5', port: 3999, pin: '654321', url: 'http://192.168.1.5:3999/?pin=654321', shortUrl: 'http://192.168.1.5:3999', mobileCount: 0 }) });
+  }
+  for (const fn of wsListeners.get('message') || []) {
+    fn({ data: JSON.stringify({ type: 'PLAYER_COMMAND', command: 'togglePlay' }) });
+  }
+  await new Promise((r) => setTimeout(r, 15));
+
+  assert.deepEqual(JSON.parse(JSON.stringify(sentToTabs)), [
+    [301, { type: 'PLAYER_COMMAND', command: 'togglePlay' }]
+  ]);
+  assert.ok(wsSent.some((m) => m.type === 'STATE_UPDATE' && m.state?.title === 'Track X'));
+
+  // Verify LAN_GET_STATUS returns cached serverInfo
+  const statusResp = await new Promise((resolve) => {
+    messageListener({ type: 'LAN_GET_STATUS' }, {}, resolve);
+  });
+  assert.equal(statusResp.ok, true);
+  assert.equal(statusResp.connected, true);
+  assert.equal(statusResp.serverInfo.pin, '654321');
+
+  // PLAY_URL clears savedProgress and lastPlayed
+  for (const fn of wsListeners.get('message') || []) {
+    fn({ data: JSON.stringify({ type: 'PLAY_URL', url: 'https://soundcloud.com/artist/new-track' }) });
+  }
+  await new Promise((r) => setTimeout(r, 40));
+  assert.deepEqual(JSON.parse(JSON.stringify(storageLocal.savedProgress)), {});
+  assert.equal(storageLocal.lastPlayed, null);
+  assert.equal(storageLocal.pendingResume.trackUrl, 'https://soundcloud.com/artist/new-track');
+});
+
+test('content-main finds and clicks MUI Play button inside shadowRoot on PLAY_ON_PAGE', () => {
+  const h = loadContentMainHarness();
+  h.playEl.classList.remove('playing');
+  h.titleEl.setAttribute('href', '');
+  h.winObj.getComputedStyle = () => ({ display: 'inline-flex', visibility: 'visible' });
+  let muiClicked = false;
+  const muiBtn = createFakeElement('button', {
+    classes: ['MuiButtonBase-root', 'MuiButton-root'],
+    attrs: { 'aria-label': 'Play' }
+  });
+  muiBtn.addEventListener('click', () => {
+    muiClicked = true;
+  });
+
+  const shadowHost = createFakeElement('div');
+  shadowHost.shadowRoot = {
+    querySelectorAll: (sel) => (sel.includes('MuiButtonBase-root') || sel.includes('aria-label="Play"') ? [muiBtn] : [])
+  };
+
+  h.winObj.document.querySelectorAll = (sel) => (sel === '*' ? [shadowHost] : []);
+  h.sendBridgeMessage({
+    type: 'PLAY_ON_PAGE',
+    targetUrl: 'https://soundcloud.com/artist/track-a',
+    timeSec: 0,
+    requestedAt: Date.now(),
+    allowHidden: true
+  });
+
+  assert.equal(muiClicked, true);
 });

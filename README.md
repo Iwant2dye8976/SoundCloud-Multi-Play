@@ -13,6 +13,31 @@ A Manifest V3 Chrome extension that keeps SoundCloud playing across tabs and dev
 - **Like & Follow** — Like the playing track or follow its artist directly from the popup.
 - **Track downloader** — Download the currently playing track (`.m4a` AAC or `.mp3` when provided by SoundCloud) with live progress, timeout/retry protection, and click-to-cancel support.
 - **Save & resume progress** — Automatically saves your playback position for the latest track, resets it when you play a new song, skip, or finish the track, and lets you resume from the popup.
+- **LAN mobile remote** — Control playback, seek, volume, shuffle/repeat, Like/Follow, and SoundCloud tabs from any phone on the same Wi-Fi/LAN via a zero-dependency companion server with PIN + QR code pairing.
+
+## LAN Mobile Remote
+
+### Option A — Automatic start/stop from the extension (recommended, Windows)
+
+1. Click **Copy setup** inside the extension popup (works from any folder and auto-locates your extension path), or run from any directory:
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File "C:\soundcloud\lan-server\install-native-host.ps1"
+   ```
+2. Reload the extension in `chrome://extensions`.
+3. Toggle **LAN Mobile Remote** on in the popup — Chrome now starts and stops the companion server automatically in the background with no terminal needed. Scan the QR code (or open the LAN URL and enter the 6-digit PIN) on your phone.
+
+*(To remove the auto-start registration and `sc-remote` CLI shim later, run `powershell -NoProfile -ExecutionPolicy Bypass -File "C:\soundcloud\lan-server\uninstall-native-host.ps1"`.)*
+
+### Option B — Manual start (from any directory)
+
+After running the setup script once, you can start the server from any folder with:
+```sh
+sc-remote
+```
+Or directly via Node:
+```sh
+node "C:\soundcloud\lan-server\server.js"
+```
 
 ## Global Shortcuts
 
@@ -59,14 +84,20 @@ soundcloud/
 │   ├── icon-16.png
 │   ├── icon-48.png
 │   └── icon-128.png
+├── lan-server/
+│   ├── server.js          # Zero-dependency Node.js HTTP + WebSocket LAN bridge
+│   └── public/            # Mobile web remote UI (HTML, CSS, JS)
 └── popup/
     ├── popup.html         # Extension popup markup
     ├── popup.css          # Dark mini-player styling
-    └── popup.js           # Popup UI logic, shortcuts, and tab communication
+    ├── popup.js           # Popup UI logic, shortcuts, LAN pairing, and tab communication
+    └── qr.js              # Zero-dependency SVG QR code generator
 ```
 
 ## Permissions
 
-- `storage` — Stores the bypass toggle state and saved track playback positions locally in `chrome.storage.local`.
+- `storage` — Stores the bypass toggle state, LAN remote preferences, and saved track playback positions locally in `chrome.storage.local`.
 - `tabs` — Finds active SoundCloud tabs to query player state, send playback commands, or focus/open SoundCloud.
+- `alarms` — Keeps the MV3 service worker WebSocket bridge alive when LAN Mobile Remote is enabled.
+- `nativeMessaging` — Lets Chrome automatically start and stop the local LAN companion server when LAN Mobile Remote is toggled on/off.
 - `*://*.soundcloud.com/*` — Injects the content scripts on SoundCloud pages.

@@ -13,6 +13,31 @@ Tiện ích mở rộng Chrome (Manifest V3) giúp SoundCloud tiếp tục phát
 - **Like & Follow** — Nhấn thích bài hát đang phát hoặc theo dõi nghệ sĩ trực tiếp trong popup.
 - **Tải bài hát đang phát** — Tải về bài hát đang phát (định dạng `.m4a` AAC hoặc `.mp3` khi SoundCloud cung cấp) với thanh tiến trình trực tiếp, tự thử lại khi timeout và hỗ trợ nhấn để hủy tải.
 - **Lưu & tiếp tục tiến trình** — Tự động lưu vị trí đang nghe cho bài hát gần nhất, đặt lại thời gian phát khi bạn nghe bài mới, chuyển bài tiếp theo hoặc nghe hết bài, kèm thẻ Tiếp tục (Resume) trong popup.
+- **Điều khiển từ điện thoại qua mạng LAN** — Điều khiển phát/tạm dừng, tua, âm lượng, trộn bài/lặp lại, Like/Follow và chuyển tab SoundCloud từ điện thoại cùng mạng Wi-Fi/LAN thông qua máy chủ Node.js nhẹ (không phụ thuộc thư viện ngoài) kèm mã PIN và mã QR ghép nối.
+
+## Điều khiển qua mạng LAN
+
+### Cách A — Tự động bật/tắt cùng tiện ích (khuyên dùng trên Windows)
+
+1. Nhấn **Copy setup** trong popup (lệnh chạy được từ bất kỳ thư mục nào và tự tìm đường dẫn tiện ích), hoặc chạy từ bất kỳ đâu:
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File "C:\soundcloud\lan-server\install-native-host.ps1"
+   ```
+2. Tải lại tiện ích tại `chrome://extensions`.
+3. Bật **LAN Mobile Remote** trong popup — Chrome sẽ tự động chạy ngầm máy chủ cầu nối (không cần mở terminal) và tự dừng khi tắt. Quét mã QR hoặc mở địa chỉ LAN và nhập mã PIN 6 chữ số trên điện thoại.
+
+*(Để gỡ bỏ cấu hình tự khởi động và lệnh `sc-remote`, chạy `powershell -NoProfile -ExecutionPolicy Bypass -File "C:\soundcloud\lan-server\uninstall-native-host.ps1"`.)*
+
+### Cách B — Chạy thủ công (từ bất kỳ thư mục nào)
+
+Sau khi chạy cài đặt một lần, bạn có thể mở server từ bất kỳ thư mục nào bằng lệnh:
+```sh
+sc-remote
+```
+Hoặc chạy trực tiếp bằng Node:
+```sh
+node "C:\soundcloud\lan-server\server.js"
+```
 
 ## Phím tắt toàn cục
 
@@ -59,14 +84,20 @@ soundcloud/
 │   ├── icon-16.png
 │   ├── icon-48.png
 │   └── icon-128.png
+├── lan-server/
+│   ├── server.js          # Máy chủ Node.js HTTP + WebSocket qua LAN (không phụ thuộc ngoài)
+│   └── public/            # Giao diện web điều khiển cho điện thoại (HTML, CSS, JS)
 └── popup/
     ├── popup.html         # Giao diện popup
     ├── popup.css          # CSS giao diện tối cho mini-player
-    └── popup.js           # Logic popup, phím tắt và giao tiếp với tab
+    ├── popup.js           # Logic popup, phím tắt, ghép nối LAN và giao tiếp với tab
+    └── qr.js              # Trình tạo mã QR SVG không phụ thuộc ngoài
 ```
 
 ## Quyền truy cập
 
-- `storage` — Lưu trạng thái bật/tắt và vị trí phát đã lưu cục bộ trong `chrome.storage.local`.
+- `storage` — Lưu trạng thái bật/tắt, cấu hình LAN và vị trí phát đã lưu cục bộ trong `chrome.storage.local`.
 - `tabs` — Tìm các tab SoundCloud đang mở để lấy trạng thái trình phát, gửi lệnh điều khiển hoặc chuyển đến/mở SoundCloud.
+- `alarms` — Duy trì kết nối WebSocket trong service worker MV3 khi bật điều khiển qua mạng LAN.
+- `nativeMessaging` — Cho phép Chrome tự động bật và tắt máy chủ cầu nối LAN cục bộ theo công tắc LAN Mobile Remote.
 - `*://*.soundcloud.com/*` — Chèn content script trên các trang SoundCloud.

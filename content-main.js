@@ -19,6 +19,9 @@
   let lastSavedSignature = '';
   let suppressedSaveTrackUrl = '';
   let suppressedSaveUntil = 0;
+  let manualSeekTrackUrl = '';
+  let lastKnownTrackUrl = '';
+  let lastKnownTimeSec = 0;
   let pendingResume = null;
   let pendingSeekTargetSec = 0;
   let pendingSeekUntil = 0;
@@ -43,6 +46,11 @@
                 resetSavedOnNext();
                 return handler.apply(this, args);
               }
+            : action === 'previoustrack' && typeof handler === 'function'
+            ? function (...args) {
+                markManualSeekCurrentTrack();
+                return handler.apply(this, args);
+              }
             : handler;
         return origSetActionHandler(action, wrappedHandler);
       };
@@ -54,11 +62,12 @@
         if (state && typeof state === 'object') {
           const trackHref = document.querySelector('.playbackSoundBadge__titleLink')?.href || '';
           const nextTrackUrl = normalizeTrackUrl(trackHref);
+          const rate = Number(state.playbackRate);
           mediaPositionState = {
             trackUrl: nextTrackUrl,
             duration: Number(state.duration) || 0,
             position: Number(state.position) || 0,
-            playbackRate: Number(state.playbackRate) || 1
+            playbackRate: Number.isFinite(rate) && rate >= 0 ? rate : 1
           };
           mediaPositionUpdatedAt = Date.now();
           if (nextTrackUrl && nextTrackUrl !== prevTrackUrl) {
@@ -85,7 +94,7 @@
     if (!url) return '';
     try {
       const parsed = new URL(String(url), location.origin);
-      const host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+      const host = parsed.hostname.replace(/^(www|m)\./i, '').toLowerCase();
       const path = parsed.pathname.replace(/\/+$/, '').toLowerCase();
       return `${parsed.protocol}//${host}${path}`;
     } catch {
@@ -346,18 +355,26 @@
       titleEl?.getAttribute('title')?.trim() ||
       '';
 
-    const ariaNow = Number(progressWrap?.getAttribute('aria-valuenow'));
-    const ariaMax = Number(progressWrap?.getAttribute('aria-valuemax'));
-    const timePassedText = timePassedEl?.textContent?.trim() || '0:00';
-    const durationRawText = durationEl?.textContent?.trim() || '0:00';
+    const ariaNowAttr = progressWrap?.getAttribute('aria-valuenow');
+    const ariaMaxAttr = progressWrap?.getAttribute('aria-valuemax');
+    const ariaNow = ariaNowAttr !== null && ariaNowAttr !== undefined && ariaNowAttr.trim() !== ''
+      ? Number(ariaNowAttr)
+      : NaN;
+    const ariaMax = ariaMaxAttr !== null && ariaMaxAttr !== undefined && ariaMaxAttr.trim() !== ''
+      ? Number(ariaMaxAttr)
+      : NaN;
+    const timePassedText = timePassedEl?.textContent?.trim() || '';
+    const durationRawText = durationEl?.textContent?.trim() || '';
     const isPlaying = Boolean(playEl?.classList.contains('playing'));
+    const hasDomTimePassed = Boolean(timePassedText);
+    const hasDomDuration = Boolean(durationRawText) && !durationRawText.startsWith('-');
 
     let currentTimeSec = Number.isFinite(ariaNow) && ariaNow >= 0
       ? ariaNow
       : parseTimeStr(timePassedText);
     let durationSec = Number.isFinite(ariaMax) && ariaMax > 0
       ? ariaMax
-      : parseTimeStr(durationRawText);
+      : (hasDomDuration ? parseTimeStr(durationRawText) : 0);
 
     const currentTrackNorm = normalizeTrackUrl(titleEl?.href);
     const hasMatchingMediaPos = Boolean(
@@ -367,11 +384,12 @@
     );
     if (hasMatchingMediaPos) {
       durationSec = mediaPositionState.duration;
-      const elapsed = isPlaying
-        ? ((Date.now() - mediaPositionUpdatedAt) / 1000) * (mediaPositionState.playbackRate || 1)
-        : 0;
+      const posAgeSec = Math.max(0, (Date.now() - mediaPositionUpdatedAt) / 1000);
+      const rate = Number.isFinite(mediaPositionState.playbackRate) ? mediaPositionState.playbackRate : 1;
+      const elapsed = isPlaying && rate > 0 ? posAgeSec * rate : 0;
       const msPos = Math.min(durationSec, Math.max(0, mediaPositionState.position + elapsed));
-      if (Math.abs(msPos - currentTimeSec) <= 3 || !Number.isFinite(ariaNow)) {
+      const hasDomNow = (Number.isFinite(ariaNow) && ariaNow >= 0) || hasDomTimePassed;
+      if (Math.abs(msPos - currentTimeSec) <= 3 || (!hasDomNow && posAgeSec <= 5)) {
         currentTimeSec = msPos;
       }
     }
@@ -492,12 +510,20 @@
     return true;
   }
 
+  function markManualSeekCurrentTrack() {
+    const trackUrl = normalizeTrackUrl(document.querySelector('.playbackSoundBadge__titleLink')?.href);
+    if (!trackUrl) return;
+    manualSeekTrackUrl = trackUrl;
+    restoredTracks.add(trackUrl);
+  }
+
   function runPlayerCommand(cmd, value) {
     switch (cmd) {
       case 'togglePlay':
         document.querySelector('.playControl')?.click();
         break;
       case 'prev':
+        markManualSeekCurrentTrack();
         document.querySelector('.skipControl__previous')?.click();
         break;
       case 'next':
@@ -524,7 +550,11 @@
         break;
       case 'seekRatio': {
         const st = getPlayerState();
-        if (st.trackUrl) restoredTracks.add(normalizeTrackUrl(st.trackUrl));
+        if (st.trackUrl) {
+          const clean = normalizeTrackUrl(st.trackUrl);
+          manualSeekTrackUrl = clean;
+          restoredTracks.add(clean);
+        }
         seekToRatio(value);
         setTimeout(persistCurrentProgress, 150);
         break;
@@ -533,7 +563,11 @@
         const state = getPlayerState();
         const delta = Number(value || 0);
         if (state.durationSec > 0) {
-          if (state.trackUrl) restoredTracks.add(normalizeTrackUrl(state.trackUrl));
+          if (state.trackUrl) {
+            const clean = normalizeTrackUrl(state.trackUrl);
+            manualSeekTrackUrl = clean;
+            restoredTracks.add(clean);
+          }
           const now = Date.now();
           const baseSec = now < pendingSeekUntil ? pendingSeekTargetSec : state.currentTimeSec;
           const targetSec = Math.min(state.durationSec, Math.max(0, baseSec + delta));
@@ -642,7 +676,7 @@
       return;
     }
 
-    if (sec >= dur - 5) {
+    if (sec >= dur - 5 && (state.isPlaying || manualSeekTrackUrl === cleanUrl)) {
       resetSavedProgress(cleanUrl);
       return;
     }
@@ -694,8 +728,31 @@
     );
   }
 
+  function collectSearchRoots(root = document, roots = []) {
+    if (!root) return roots;
+    roots.push(root);
+    const all = root.querySelectorAll ? root.querySelectorAll('*') : [];
+    for (const el of all) {
+      if (el.shadowRoot) {
+        collectSearchRoots(el.shadowRoot, roots);
+      }
+      if (el.tagName === 'IFRAME') {
+        try {
+          if (el.contentDocument) {
+            collectSearchRoots(el.contentDocument, roots);
+          }
+        } catch {
+          // Ignore cross-origin iframes
+        }
+      }
+    }
+    return roots;
+  }
+
   function findPagePlayButton() {
     const selectors = [
+      'button.MuiButtonBase-root[aria-label="Play" i]',
+      'button.MuiButtonBase-root[aria-label="Pause" i]',
       '.fullHero .playButton',
       '.fullHero .sc-button-play',
       '.listenHero .sc-button-play',
@@ -703,18 +760,28 @@
       '.soundTitle__playButton button',
       '.listenEngagement .playButton',
       '.sc-button-play.playButton',
-      '[data-testid="play-button"]'
+      '[data-testid="play-button"]',
+      'button[aria-label="Play" i]',
+      'button[aria-label="Pause" i]'
     ];
+    const roots = collectSearchRoots();
     for (const sel of selectors) {
-      const candidates = document.querySelectorAll(sel);
-      for (const el of candidates) {
-        if (
-          !el.disabled &&
-          !el.classList.contains('disabled') &&
-          !isExcludedPlayButton(el) &&
-          isElementVisible(el)
-        ) {
-          return el;
+      for (const root of roots) {
+        let candidates = [];
+        try {
+          candidates = root.querySelectorAll(sel);
+        } catch {
+          continue;
+        }
+        for (const el of candidates) {
+          if (
+            !el.disabled &&
+            !el.classList.contains('disabled') &&
+            !isExcludedPlayButton(el) &&
+            isElementVisible(el)
+          ) {
+            return el;
+          }
         }
       }
     }
@@ -825,7 +892,11 @@
 
     const state = getPlayerState();
     const stateTrackNorm = normalizeTrackUrl(state.trackUrl);
-    const isTargetLoaded = state.hasTrack && stateTrackNorm === targetNorm;
+    const isSetOrProfile = /\/sets\//i.test(targetNorm);
+    const isTargetLoaded = state.hasTrack && (
+      stateTrackNorm === targetNorm ||
+      (isSetOrProfile && resumeAttemptCount > 0 && state.isPlaying)
+    );
 
     if (isTargetLoaded && state.isPlaying) {
       maybeRestoreProgress();
@@ -841,8 +912,13 @@
       return;
     }
 
-    if (document.visibilityState !== 'visible') {
+    if (!pendingResume.allowHidden && document.visibilityState !== 'visible') {
       scheduleResumeRetry(150);
+      return;
+    }
+
+    if (document.readyState !== 'complete') {
+      scheduleResumeRetry(200);
       return;
     }
 
@@ -921,7 +997,8 @@
     pendingResume = {
       trackUrl: targetNorm,
       timeSec: Number(resumeObj.timeSec) || 0,
-      requestedAt: incomingRequestedAt
+      requestedAt: incomingRequestedAt,
+      allowHidden: Boolean(resumeObj.allowHidden)
     };
     resumeAttemptCount = 0;
     lastResumeClickAt = 0;
@@ -937,13 +1014,49 @@
     if (!savedProgressLoaded && !pendingResume) return;
 
     const state = getPlayerState();
-    if (!state.hasTrack || !state.isPlaying || !state.trackUrl || state.durationSec <= 15) return;
+    if (!state.hasTrack || !state.trackUrl || state.durationSec <= 15) return;
 
     const cleanUrl = normalizeTrackUrl(state.trackUrl);
-    if (restoredTracks.has(cleanUrl)) return;
+    if (!cleanUrl) return;
+
+    if (cleanUrl !== lastKnownTrackUrl) {
+      lastKnownTrackUrl = cleanUrl;
+      lastKnownTimeSec = state.currentTimeSec;
+      if (manualSeekTrackUrl && manualSeekTrackUrl !== cleanUrl) {
+        manualSeekTrackUrl = '';
+      }
+    }
 
     const entry = savedProgress[cleanUrl];
-    if (!entry || entry.timeSec < 5 || entry.timeSec >= state.durationSec - 5) {
+    const hasSavedPos = Boolean(entry && entry.timeSec >= 5 && entry.timeSec < state.durationSec - 5);
+
+    if (!state.isPlaying) {
+      if (hasSavedPos && state.currentTimeSec <= 4 && manualSeekTrackUrl !== cleanUrl) {
+        restoredTracks.delete(cleanUrl);
+        restoreSeekAttempts.delete(cleanUrl);
+      }
+      lastKnownTimeSec = state.currentTimeSec;
+      return;
+    }
+
+    if (state.currentTimeSec >= 5 && manualSeekTrackUrl === cleanUrl) {
+      manualSeekTrackUrl = '';
+    }
+
+    if (
+      hasSavedPos &&
+      state.currentTimeSec <= 4 &&
+      manualSeekTrackUrl !== cleanUrl &&
+      lastKnownTimeSec >= 5 &&
+      !restoreSeekAttempts.has(cleanUrl)
+    ) {
+      restoredTracks.delete(cleanUrl);
+    }
+    lastKnownTimeSec = state.currentTimeSec;
+
+    if (restoredTracks.has(cleanUrl)) return;
+
+    if (!hasSavedPos) {
       restoredTracks.add(cleanUrl);
       restoreSeekAttempts.delete(cleanUrl);
       return;
@@ -951,7 +1064,7 @@
 
     if (state.currentTimeSec <= 4) {
       const attempts = restoreSeekAttempts.get(cleanUrl) || 0;
-      if (attempts >= 3) {
+      if (attempts >= 5) {
         restoredTracks.add(cleanUrl);
         restoreSeekAttempts.delete(cleanUrl);
         return;
@@ -963,7 +1076,12 @@
 
       setTimeout(() => {
         const cur = getPlayerState();
-        if (cur.hasTrack && normalizeTrackUrl(cur.trackUrl) === cleanUrl && cur.currentTimeSec <= 4) {
+        if (!cur.hasTrack || normalizeTrackUrl(cur.trackUrl) !== cleanUrl || !cur.isPlaying) {
+          restoredTracks.delete(cleanUrl);
+          restoreSeekAttempts.delete(cleanUrl);
+          return;
+        }
+        if (cur.currentTimeSec <= 4) {
           const ok = seekToRatio(ratio);
           setTimeout(() => {
             const after = getPlayerState();
@@ -972,14 +1090,14 @@
               after.isPlaying &&
               normalizeTrackUrl(after.trackUrl) === cleanUrl &&
               after.currentTimeSec <= 4 &&
-              (restoreSeekAttempts.get(cleanUrl) || 0) < 3
+              (restoreSeekAttempts.get(cleanUrl) || 0) < 5
             ) {
               restoredTracks.delete(cleanUrl);
               if (ok) maybeRestoreProgress();
             } else {
               restoreSeekAttempts.delete(cleanUrl);
             }
-          }, 500);
+          }, 800);
         } else {
           restoreSeekAttempts.delete(cleanUrl);
         }
@@ -1045,6 +1163,15 @@
     (event) => {
       if (event.target?.closest?.('.skipControl__next')) {
         resetSavedOnNext();
+      }
+    },
+    true
+  );
+  document.addEventListener(
+    'pointerdown',
+    (event) => {
+      if (event.target?.closest?.('.playbackTimeline__progressWrapper, .skipControl__previous')) {
+        markManualSeekCurrentTrack();
       }
     },
     true
@@ -1363,7 +1490,8 @@
       const resumeObj = {
         trackUrl: targetUrl,
         timeSec: Number(event.data.timeSec) || 0,
-        requestedAt: Number(event.data.requestedAt) || Date.now()
+        requestedAt: Number(event.data.requestedAt) || Date.now(),
+        allowHidden: Boolean(event.data.allowHidden)
       };
 
       const curUrl = normalizeTrackUrl(location.href);
@@ -1374,19 +1502,28 @@
           staleHeroBtn = findPagePlayButton();
           staleHeroClearAt = Date.now() + 1800;
           try {
-            const parsed = new URL(targetUrl);
-            history.pushState({}, '', parsed.pathname + parsed.search);
-            window.dispatchEvent(new PopStateEvent('popstate'));
+            const parsed = new URL(event.data.targetUrl || targetUrl);
+            if (parsed.origin === location.origin) {
+              const container = document.querySelector('#app, #content') || document.body;
+              if (container) {
+                const a = document.createElement('a');
+                a.href = parsed.pathname + parsed.search + parsed.hash;
+                a.style.display = 'none';
+                container.appendChild(a);
+                a.click();
+                a.remove();
+              }
+            }
           } catch {
             // Ignore URL parse error
           }
           setTimeout(() => {
             if (normalizeTrackUrl(location.href) !== targetUrl) {
-              location.assign(targetUrl);
+              location.assign(event.data.targetUrl || targetUrl);
             } else {
               startPendingResume(resumeObj);
             }
-          }, 350);
+          }, 800);
           window.postMessage(
             { source: MSG_SOURCE, type: 'RESPONSE', requestId, payload: getPlayerState() },
             '*'
